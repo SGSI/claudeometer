@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Claudeometer — your Claude usage, like a battery</title>
+<meta name="description" content="A native macOS menu-bar app that shows your Claude usage like a battery: live quota, burn rate, a 24h pace graph, and graduated alerts before you hit a limit." />
+<meta property="og:title" content="Claudeometer" />
+<meta property="og:description" content="Your Claude usage in the menu bar — live quota, burn rate, and alerts before you hit a limit." />
+<meta property="og:type" content="website" />
+<link rel="icon" type="image/png" href="claudeometer-icon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,900;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f6efe3;
+    --bg-warm: #f1e7d6;
+    --card: #fbf6ec;
+    --ink: #2a2420;
+    --ink-soft: #756a5c;
+    --ink-faint: #9c9183;
+    --terra: #dd6b43;
+    --terra-deep: #c2552f;
+    --terra-glow: rgba(221, 107, 67, 0.18);
+    --green: #6aa45a;
+    --yellow: #e0b341;
+    --line: rgba(42, 36, 32, 0.12);
+    --line-soft: rgba(42, 36, 32, 0.07);
+    --face: #f3ead9;
+    --shadow: 28px 32px 60px -28px rgba(60, 38, 22, 0.45);
+    --radius: 22px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: "Hanken Grotesk", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* warm atmospheric backdrop: sun-rays + grain */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(120% 80% at 78% -10%, var(--terra-glow), transparent 55%),
+      radial-gradient(90% 60% at 0% 100%, rgba(106, 164, 90, 0.10), transparent 60%),
+      var(--bg);
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.4;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  }
+
+  .wrap { width: min(1120px, 92vw); margin: 0 auto; }
+
+  /* ---------- nav ---------- */
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 26px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; font-size: 19px; letter-spacing: -0.01em; }
+  .brand img { width: 30px; height: 30px; filter: drop-shadow(0 4px 8px rgba(194, 85, 47, 0.3)); }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-weight: 500; font-size: 15px; }
+  .nav-links a { color: var(--ink-soft); text-decoration: none; transition: color 0.2s; }
+  .nav-links a:hover { color: var(--terra-deep); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 56px;
+    align-items: center;
+    padding: 40px 0 90px;
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--terra-deep);
+    background: rgba(221, 107, 67, 0.10);
+    border: 1px solid rgba(221, 107, 67, 0.22);
+    padding: 6px 13px;
+    border-radius: 100px;
+    margin-bottom: 26px;
+    opacity: 0;
+    animation: rise 0.7s 0.05s ease-out forwards;
+  }
+  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(106,164,90,0.25); }
+
+  h1 {
+    font-family: "Fraunces", serif;
+    font-optical-sizing: auto;
+    font-weight: 900;
+    font-size: clamp(44px, 6.2vw, 82px);
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin-bottom: 22px;
+    opacity: 0;
+    animation: rise 0.8s 0.12s ease-out forwards;
+  }
+  h1 em { font-style: italic; color: var(--terra-deep); }
+
+  .lede {
+    font-size: clamp(17px, 1.5vw, 20px);
+    color: var(--ink-soft);
+    max-width: 30em;
+    margin-bottom: 34px;
+    opacity: 0;
+    animation: rise 0.8s 0.2s ease-out forwards;
+  }
+
+  .cta-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; opacity: 0; animation: rise 0.8s 0.28s ease-out forwards; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 16px;
+    text-decoration: none;
+    padding: 15px 26px;
+    border-radius: 14px;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s;
+    border: none;
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--terra) 0%, var(--terra-deep) 100%);
+    color: #fff;
+    box-shadow: 0 12px 28px -10px rgba(194, 85, 47, 0.65);
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 18px 34px -12px rgba(194, 85, 47, 0.75); }
+  .btn-primary small { font-weight: 400; opacity: 0.82; font-size: 12.5px; }
+  .btn-ghost { color: var(--ink); border: 1.5px solid var(--line); background: transparent; }
+  .btn-ghost:hover { border-color: var(--ink-soft); transform: translateY(-2px); }
+
+  .meta-line { margin-top: 18px; font-size: 13.5px; color: var(--ink-faint); display: flex; gap: 10px; flex-wrap: wrap; opacity: 0; animation: rise 0.8s 0.36s ease-out forwards; }
+  .meta-line span { display: inline-flex; align-items: center; gap: 6px; }
+  .meta-line b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---------- hero visual: menubar + popover mock ---------- */
+  .stage { position: relative; opacity: 0; animation: rise 0.9s 0.3s ease-out forwards; }
+  .sun-halo {
+    position: absolute;
+    width: 360px; height: 360px;
+    top: -70px; right: -60px;
+    background: radial-gradient(circle, var(--terra-glow), transparent 68%);
+    z-index: 0;
+    animation: breathe 7s ease-in-out infinite;
+  }
+  .menubar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    justify-content: flex-end;
+    background: rgba(26, 22, 19, 0.92);
+    border-radius: 12px 12px 0 0;
+    padding: 7px 14px;
+    width: 86%;
+    margin: 0 auto -6px;
+    box-shadow: 0 -1px 0 rgba(255,255,255,0.05) inset;
+  }
+  .menubar .sys { color: rgba(255,255,255,0.45); font-size: 13px; display: flex; gap: 13px; align-items: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--terra);
+    color: #fff;
+    font-weight: 700;
+    font-size: 13px;
+    padding: 3px 9px;
+    border-radius: 100px;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill .ray { width: 13px; height: 13px; animation: spinglow 6s linear infinite; }
+
+  .popover {
+    position: relative;
+    z-index: 1;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    width: min(380px, 100%);
+    margin: 0 auto;
+  }
+  .pop-head { display: flex; align-items: center; gap: 11px; margin-bottom: 18px; }
+  .pop-badge {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(150deg, var(--terra), var(--terra-deep));
+    display: grid; place-items: center;
+    box-shadow: 0 6px 14px -6px rgba(194,85,47,0.6);
+  }
+  .pop-badge svg { width: 20px; height: 20px; animation: shimmer 2.4s ease-in-out infinite; }
+  .pop-title { font-weight: 700; font-size: 15px; line-height: 1.2; }
+  .pop-sub { font-size: 12px; color: var(--ink-faint); }
+
+  .eyebrow-sm { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); display: flex; align-items: center; justify-content: space-between; }
+  .hero-pct { font-family: "Fraunces", serif; font-weight: 900; font-size: 46px; line-height: 1; letter-spacing: -0.02em; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+  .burn { font-size: 13px; color: var(--ink-soft); font-weight: 500; margin-bottom: 11px; }
+  .burn b { color: var(--terra-deep); }
+
+  .bar { height: 10px; border-radius: 100px; background: rgba(42,36,32,0.09); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 100px; background: linear-gradient(90deg, var(--green), var(--yellow) 62%, var(--terra)); }
+  .reset { font-size: 11px; color: var(--ink-faint); margin-top: 7px; }
+
+  .divider { height: 1px; background: var(--line-soft); margin: 16px 0; }
+  .sec-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
+
+  .qrow { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 13px; }
+  .qrow .name { width: 78px; color: var(--ink); }
+  .qrow .mini { flex: 1; height: 6px; border-radius: 100px; background: rgba(42,36,32,0.09); overflow: hidden; }
+  .qrow .mini > i { display: block; height: 100%; border-radius: 100px; }
+  .qrow .val { width: 38px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  .spark { width: 100%; height: 42px; display: block; }
+  .hot { font-size: 12.5px; display: flex; justify-content: space-between; padding: 4px 0; color: var(--ink-soft); }
+  .hot b { color: var(--ink); font-weight: 600; }
+  .hot .tok { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .pop-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 11.5px; color: var(--ink-faint); }
+  .pop-foot .icons { display: flex; gap: 12px; font-size: 14px; opacity: 0.7; }
+
+  /* ---------- sections ---------- */
+  section { padding: 80px 0; }
+  .sec-head { max-width: 36em; margin-bottom: 48px; }
+  .sec-kicker { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--terra-deep); margin-bottom: 14px; }
+  .sec-head h2 { font-family: "Fraunces", serif; font-weight: 700; font-size: clamp(30px, 4vw, 46px); line-height: 1.05; letter-spacing: -0.02em; }
+  .sec-head p { color: var(--ink-soft); font-size: 17px; margin-top: 16px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .feature {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 26px 24px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s;
+  }
+  .feature:hover { transform: translateY(-4px); box-shadow: 18px 22px 44px -26px rgba(60,38,22,0.4); border-color: rgba(221,107,67,0.4); }
+  .feature .ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 16px; background: rgba(221,107,67,0.12); color: var(--terra-deep); font-size: 21px; }
+  .feature h3 { font-size: 17px; font-weight: 700; margin-bottom: 7px; letter-spacing: -0.01em; }
+  .feature p { font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; }
+
+  /* how it works */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; counter-reset: step; }
+  .step { position: relative; padding-top: 18px; }
+  .step::before {
+    counter-increment: step; content: "0" counter(step);
+    font-family: "Fraunces", serif; font-weight: 900; font-size: 15px;
+    color: #fff; background: var(--terra-deep);
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center; margin-bottom: 16px;
+    box-shadow: 0 6px 14px -6px rgba(194,85,47,0.6);
+  }
+  .step h3 { font-size: 17px; margin-bottom: 7px; }
+  .step p { font-size: 14.5px; color: var(--ink-soft); }
+  .step code { background: rgba(42,36,32,0.07); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+
+  /* install callout */
+  .callout {
+    background: linear-gradient(155deg, #2a2420, #1c1814);
+    color: #f4ece0;
+    border-radius: var(--radius);
+    padding: 44px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 30px;
+    align-items: center;
+  }
+  .callout h2 { font-family: "Fraunces", serif; font-weight: 700; font-size: 30px; margin-bottom: 12px; letter-spacing: -0.01em; }
+  .callout p { color: rgba(244,236,224,0.72); font-size: 15.5px; max-width: 40em; }
+  .callout code { display: inline-block; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); color: #f8d9c8; padding: 9px 14px; border-radius: 9px; font-size: 13.5px; margin-top: 16px; font-family: "SFMono-Regular", ui-monospace, monospace; }
+  .callout .dl { white-space: nowrap; }
+
+  /* footer */
+  footer { padding: 50px 0 70px; border-top: 1px solid var(--line); margin-top: 40px; }
+  .foot-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; }
+  .foot-row .brand { font-size: 17px; }
+  .foot-links { display: flex; gap: 24px; font-size: 14px; }
+  .foot-links a { color: var(--ink-soft); text-decoration: none; }
+  .foot-links a:hover { color: var(--terra-deep); }
+  .disclaimer { margin-top: 26px; font-size: 12.5px; color: var(--ink-faint); max-width: 60em; }
+
+  /* animations */
+  @keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes breathe { 0%,100% { transform: scale(1); opacity: 0.85; } 50% { transform: scale(1.08); opacity: 1; } }
+  @keyframes spinglow { to { transform: rotate(360deg); } }
+  @keyframes shimmer { 0%,100% { opacity: 0.78; transform: scale(0.96); } 50% { opacity: 1; transform: scale(1.04); } }
+
+  @media (max-width: 880px) {
+    .hero { grid-template-columns: 1fr; gap: 40px; padding-bottom: 60px; }
+    .stage { max-width: 420px; margin: 0 auto; }
+    .grid, .steps { grid-template-columns: 1fr; }
+    .callout { grid-template-columns: 1fr; padding: 32px; }
+    .nav-links a:not(.btn) { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; }
+    .eyebrow, h1, .lede, .cta-row, .meta-line, .stage { opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <div class="brand"><img src="claudeometer-icon.png" alt="Claudeometer" /> Claudeometer</div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="https://github.com/SGSI/claudeometer">GitHub</a>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="hero-copy">
+      <span class="eyebrow"><span class="dot"></span> macOS menu bar · free &amp; open source</span>
+      <h1>Your Claude usage, <em>like a battery.</em></h1>
+      <p class="lede">Claudeometer lives in your menu bar and shows your Claude quota at a glance — the 5-hour window, burn rate, a live pace graph, and a heads-up <em>before</em> you slam into a limit.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">
+          ↓ Download for macOS <small>· .dmg</small>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/SGSI/claudeometer">View on GitHub</a>
+      </div>
+      <div class="meta-line">
+        <span>🍎 <b>macOS 13+</b></span>
+        <span>· Apple Silicon &amp; Intel</span>
+        <span>· reads your local Claude Code login</span>
+      </div>
+    </div>
+
+    <!-- live CSS mock of the menu-bar popover -->
+    <div class="stage">
+      <div class="sun-halo"></div>
+      <div class="menubar">
+        <span class="pill">
+          <svg class="ray" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><g>
+            <line x1="12" y1="12" x2="12" y2="3"/><line x1="12" y1="12" x2="18" y2="6"/><line x1="12" y1="12" x2="21" y2="12"/><line x1="12" y1="12" x2="18" y2="18"/><line x1="12" y1="12" x2="12" y2="21"/><line x1="12" y1="12" x2="6" y2="18"/><line x1="12" y1="12" x2="3" y2="12"/><line x1="12" y1="12" x2="6" y2="6"/>
+          </g></svg>
+          62% 🙂
+        </span>
+        <span class="sys">􀊪 􀛨 􀙇 􀊫</span>
+      </div>
+
+      <div class="popover">
+        <div class="pop-head">
+          <div class="pop-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round">
+              <line x1="12" y1="12" x2="12" y2="3.5"/><line x1="12" y1="12" x2="17.5" y2="6.5"/><line x1="12" y1="12" x2="20.5" y2="12"/><line x1="12" y1="12" x2="17.5" y2="17.5"/><line x1="12" y1="12" x2="12" y2="20.5"/><line x1="12" y1="12" x2="6.5" y2="17.5"/><line x1="12" y1="12" x2="3.5" y2="12"/><line x1="12" y1="12" x2="6.5" y2="6.5"/>
+            </svg>
+          </div>
+          <div>
+            <div class="pop-title">Claudeometer</div>
+            <div class="pop-sub">you@example.com</div>
+          </div>
+        </div>
+
+        <div class="eyebrow-sm"><span>5-hour window</span><span>🙂</span></div>
+        <div class="hero-pct">62%</div>
+        <div class="burn"><b>+12%/hr ↑</b> · full in ~1h 50m</div>
+        <div class="bar"><i style="width:62%"></i></div>
+        <div class="reset">resets Fri 20:09 · in 4h 20m</div>
+
+        <div class="divider"></div>
+        <div class="sec-label">This week</div>
+        <div class="qrow"><span class="name">7-day all</span><span class="mini"><i style="width:41%;background:var(--yellow)"></i></span><span class="val">41%</span></div>
+        <div class="qrow"><span class="name">Sonnet</span><span class="mini"><i style="width:28%;background:var(--green)"></i></span><span class="val">28%</span></div>
+        <div class="qrow"><span class="name">Opus</span><span class="mini"><i style="width:11%;background:var(--green)"></i></span><span class="val">11%</span></div>
+
+        <div class="divider"></div>
+        <div class="sec-label">Last 24h · pace</div>
+        <svg class="spark" viewBox="0 0 320 42" preserveAspectRatio="none">
+          <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="var(--terra)" stop-opacity="0.32"/><stop offset="1" stop-color="var(--terra)" stop-opacity="0"/>
+          </linearGradient></defs>
+          <path d="M0,40 L20,40 40,34 60,36 80,20 100,30 120,12 140,26 160,22 180,38 200,30 220,16 240,24 260,8 280,28 300,22 320,30 L320,42 L0,42 Z" fill="url(#sg)"/>
+          <polyline points="0,40 20,40 40,34 60,36 80,20 100,30 120,12 140,26 160,22 180,38 200,30 220,16 240,24 260,8 280,28 300,22 320,30" fill="none" stroke="var(--terra)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+
+        <div class="divider"></div>
+        <div class="sec-label">Claude Code · Hot sessions</div>
+        <div class="hot"><b>refactor the auth module</b><span class="tok">128.4M</span></div>
+        <div class="hot"><b>landing page redesign</b><span class="tok">96.1M</span></div>
+        <div class="hot"><b>fix the CSV importer</b><span class="tok">22.6M</span></div>
+
+        <div class="pop-foot"><span>Updated 12s ago</span><span class="icons">↻ &nbsp; •••</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="sec-head">
+      <div class="sec-kicker">What you get</div>
+      <h2>A fuel gauge for your Claude limits.</h2>
+      <p>No more guessing how much you have left. Claudeometer reads your live quota and turns it into something you can read in half a second.</p>
+    </div>
+    <div class="grid">
+      <div class="feature"><div class="ic">🔋</div><h3>Live quota, gradient color</h3><p>The 5-hour window right in the menu bar, with a color that shifts smoothly from green to red as you climb — no hard jumps.</p></div>
+      <div class="feature"><div class="ic">⚡</div><h3>Burn rate &amp; ETA</h3><p>See how fast you're spending (<b>+%/hr</b>) and a forecast of when you'll hit the wall — turns a static gauge into a warning system.</p></div>
+      <div class="feature"><div class="ic">📈</div><h3>24-hour pace graph</h3><p>A sparkline of your recent consumption, built from history kept locally for 30 days. Spot your heavy hours at a glance.</p></div>
+      <div class="feature"><div class="ic">🔔</div><h3>Graduated alerts</h3><p>Notifications at 50%, 75%, 90% (panic), and 100% of the 5-hour window — each fires once, so you're warned, not spammed.</p></div>
+      <div class="feature"><div class="ic">🧮</div><h3>Every quota at once</h3><p>5-hour, 7-day all, Sonnet, Opus, OAuth apps, and extra-usage spend — all in one tidy popover.</p></div>
+      <div class="feature"><div class="ic">🔥</div><h3>Hot Claude Code sessions</h3><p>See which of your local Claude Code sessions are burning the most tokens in the last five hours.</p></div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="sec-head">
+      <div class="sec-kicker">How it works</div>
+      <h2>Local, private, no setup.</h2>
+      <p>Claudeometer piggybacks on the login you already have. Your token and usage data never leave your Mac — there's no account and no telemetry.</p>
+    </div>
+    <div class="steps">
+      <div class="step"><h3>Reads your existing login</h3><p>It uses the OAuth token <b>Claude Code</b> already stores in your macOS Keychain. Nothing new to sign into.</p></div>
+      <div class="step"><h3>Checks your quota</h3><p>It calls Anthropic's usage endpoint for your live numbers and keeps a small 30-day history <code>locally</code> for the pace graph.</p></div>
+      <div class="step"><h3>Keeps you in the loop</h3><p>The menu bar updates itself, and you get a nudge at each threshold — so a hit limit is never a surprise.</p></div>
+    </div>
+  </section>
+
+  <!-- INSTALL CALLOUT -->
+  <section>
+    <div class="callout">
+      <div>
+        <h2>Download &amp; run</h2>
+        <p>Grab the <code>.dmg</code>, drag Claudeometer to Applications. The app isn't notarized yet, so on first launch clear the quarantine flag once:</p>
+        <code>xattr -dr com.apple.quarantine /Applications/Claudeometer.app</code>
+      </div>
+      <a class="btn btn-primary dl" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">↓ Download .dmg</a>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="foot-row">
+      <div class="brand"><img src="claudeometer-icon.png" alt="" style="width:26px;height:26px"/> Claudeometer</div>
+      <div class="foot-links">
+        <a href="https://github.com/SGSI/claudeometer">GitHub</a>
+        <a href="https://github.com/SGSI/claudeometer/releases">Releases</a>
+        <a href="https://github.com/SGSI/claudeometer/blob/main/LICENSE">MIT License</a>
+      </div>
+    </div>
+    <p class="disclaimer">Claudeometer is an unofficial, open-source tool and is not affiliated with or endorsed by Anthropic. It relies on undocumented Anthropic endpoints that may change at any time. “Claude” is a trademark of Anthropic. MIT © 2026 SGSI.</p>
+  </footer>
+
+</div>
+</body>
+</html>
