@@ -54,4 +54,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Allow release.sh (or callers) to stamp a version: VERSION=0.1.1 ./scripts/build-app.sh
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION:-0.1.0}" "$CONTENTS_DIR/Info.plist" 2>/dev/null || true
+
 echo "$APP_DIR"
