@@ -28,12 +28,25 @@ Everything stays on your machine. The app sends no telemetry anywhere.
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew tap SGSI/claudeometer
+brew trust sgsi/claudeometer        # one-time: Homebrew 6.0+ requires trusting third-party taps
+brew install --cask claudeometer
+```
+
+Homebrew clears the macOS quarantine flag during install, so the app opens with **no
+Gatekeeper warning**.
+
+### Direct download
+
 Download the latest `Claudeometer.dmg` from the
 [releases page](https://github.com/SGSI/claudeometer/releases/latest), open it, and
 drag **Claudeometer** to **Applications**.
 
-The app is not yet signed/notarized, so macOS Gatekeeper will warn on first launch.
-To get past it, run once:
+The app is not yet signed/notarized, so a raw download triggers macOS Gatekeeper on
+first launch. To get past it, run once:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Claudeometer.app

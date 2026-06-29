@@ -305,6 +305,9 @@
   .callout h2 { font-family: "Fraunces", serif; font-weight: 700; font-size: 30px; margin-bottom: 12px; letter-spacing: -0.01em; }
   .callout p { color: rgba(244,236,224,0.78); font-size: 15.5px; max-width: 40em; }
   .callout code { display: inline-block; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); color: #f8d9c8; padding: 9px 14px; border-radius: 9px; font-size: 13.5px; margin-top: 16px; font-family: "SFMono-Regular", ui-monospace, monospace; overflow-wrap: anywhere; }
+  .callout .cmd { display: block; white-space: pre; overflow-x: auto; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); color: #f8d9c8; padding: 13px 15px; border-radius: 9px; margin-top: 12px; font-size: 13px; line-height: 1.75; font-family: "SFMono-Regular", ui-monospace, monospace; }
+  .callout .or { margin-top: 24px; }
+  .callout .badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #f8d9c8; background: rgba(221,107,67,0.22); border: 1px solid rgba(221,107,67,0.4); padding: 3px 10px; border-radius: 100px; margin-left: 8px; vertical-align: middle; }
   .callout .dl { white-space: nowrap; }
 
   /* footer */
@@ -363,7 +366,7 @@
       <div class="meta-line">
         <span><b>macOS 13+</b></span>
         <span>· Apple Silicon &amp; Intel</span>
-        <span>· reads your local Claude Code login</span>
+        <span>· or <a href="#install" style="color:var(--terra-text);font-weight:600;text-decoration:none">install with Homebrew</a></span>
       </div>
     </div>
 
@@ -480,14 +483,21 @@
   </section>
 
   <!-- INSTALL CALLOUT -->
-  <section>
-    <div class="callout">
+  <section id="install">
+    <div class="callout" style="grid-template-columns:1fr">
       <div>
-        <h2>Download &amp; run</h2>
-        <p>Grab the <code>.dmg</code>, drag Claudeometer to Applications. The app isn't notarized yet, so on first launch clear the quarantine flag once:</p>
-        <code>xattr -dr com.apple.quarantine /Applications/Claudeometer.app</code>
+        <h2>Install <span class="badge">macOS 13+</span></h2>
+        <p style="margin-top:14px"><b>Homebrew</b> — recommended; opens with no Gatekeeper warning:</p>
+        <span class="cmd">brew tap SGSI/claudeometer
+brew trust sgsi/claudeometer
+brew install --cask claudeometer</span>
+
+        <p class="or">Or <b>download the .dmg</b> — drag Claudeometer to Applications. It isn't notarized yet, so clear the quarantine flag once:</p>
+        <span class="cmd">xattr -dr com.apple.quarantine /Applications/Claudeometer.app</span>
+        <div style="margin-top:22px">
+          <a class="btn btn-primary dl" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">↓ Download .dmg</a>
+        </div>
       </div>
-      <a class="btn btn-primary dl" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">↓ Download .dmg</a>
     </div>
   </section>
 
