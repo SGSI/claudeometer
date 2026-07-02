@@ -315,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             status: status,
             accent: accent,
             history: history,
+            activeBorrowStatus: multiAccount.activeBorrowStatus,
             page: popoverPage,
             onRefresh: { [weak self] in self?.refresh() },
             onOpenSettings: { NSWorkspace.shared.open(settingsURL) },
@@ -769,6 +770,7 @@ final class UsagePanelView: NSView {
         status: String?,
         accent: NSColor,
         history: [UsageHistoryPoint],
+        activeBorrowStatus: (label: String, remaining: TimeInterval)? = nil,
         page: PopoverPage = .main,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
@@ -805,7 +807,7 @@ final class UsagePanelView: NSView {
         self.onCancelOutgoingBorrow = onCancelOutgoingBorrow
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 480))
         build(snapshot: snapshot, hotSessions: hotSessions, status: status, accent: accent, history: history,
-              page: page, teamBoard: teamBoard, selfUserId: selfUserId,
+              activeBorrowStatus: activeBorrowStatus, page: page, teamBoard: teamBoard, selfUserId: selfUserId,
               incomingRequests: incomingRequests, outgoingRequests: outgoingRequests)
     }
 
@@ -819,6 +821,7 @@ final class UsagePanelView: NSView {
         status: String?,
         accent: NSColor,
         history: [UsageHistoryPoint],
+        activeBorrowStatus: (label: String, remaining: TimeInterval)?,
         page: PopoverPage,
         teamBoard: [BoardRow],
         selfUserId: String?,
@@ -848,7 +851,8 @@ final class UsagePanelView: NSView {
         case .main:
             buildMainPage(
                 root: root, snapshot: snapshot, hotSessions: hotSessions, status: status,
-                accent: accent, history: history, teamBoard: teamBoard, selfUserId: selfUserId,
+                accent: accent, history: history, activeBorrowStatus: activeBorrowStatus,
+                teamBoard: teamBoard, selfUserId: selfUserId,
                 incomingRequests: incomingRequests
             )
         case .team:
@@ -871,11 +875,21 @@ final class UsagePanelView: NSView {
         status: String?,
         accent: NSColor,
         history: [UsageHistoryPoint],
+        activeBorrowStatus: (label: String, remaining: TimeInterval)?,
         teamBoard: [BoardRow],
         selfUserId: String?,
         incomingRequests: [IncomingRequest]
     ) {
         addFullWidth(header(snapshot: snapshot, accent: accent), to: root)
+
+        // While borrowing, the gauge below shows the BORROWED account's usage —
+        // this banner makes that unmistakable ("On krish's quota · 0:26 left").
+        if let activeBorrowStatus {
+            addFullWidth(
+                borrowingBanner(accountLabel: activeBorrowStatus.label, remaining: activeBorrowStatus.remaining),
+                to: root
+            )
+        }
 
         if let status, !status.isEmpty {
             addFullWidth(statusCard(status), to: root)
@@ -1020,6 +1034,38 @@ final class UsagePanelView: NSView {
         textLabel.preferredMaxLayoutWidth = 280
         card.addSubview(textLabel)
         pinOnlySubview(in: card)
+        return card
+    }
+
+    /// Prominent full-width soft-terra banner shown on the personal page while
+    /// borrowing a teammate's quota, making clear the gauge % below is the
+    /// BORROWED account's usage, not the user's own. Same soft-terra palette as
+    /// the borrow pills, just full-width and roomier. `accountLabel` is the
+    /// borrowed account's label ("krish (borrowed)"); a trailing " (borrowed)"
+    /// is stripped for display, and `remaining` renders as an `H:MM` countdown.
+    private func borrowingBanner(accountLabel: String, remaining: TimeInterval) -> NSView {
+        let suffix = " (borrowed)"
+        let name = accountLabel.hasSuffix(suffix) ? String(accountLabel.dropLast(suffix.count)) : accountLabel
+        let text = "⤢  On \(name)'s quota · \(formatHMM(remaining)) left"
+
+        let card = NSView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+        card.layer?.backgroundColor = Theme.terraSoft.cgColor
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = Theme.terraSoftBorder.cgColor
+
+        let textLabel = label(text, size: 12.5, weight: .semibold, color: Theme.terraText)
+        textLabel.maximumNumberOfLines = 1
+        textLabel.lineBreakMode = .byTruncatingTail
+        card.addSubview(textLabel)
+        NSLayoutConstraint.activate([
+            textLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            textLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12),
+            textLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
+            textLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9)
+        ])
         return card
     }
 
@@ -1249,9 +1295,19 @@ final class UsagePanelView: NSView {
 
         stack.addArrangedSubview(sectionHeaderLabel("TEAM"))
 
+        // The current user's own row carries who they're borrowing FROM (a display
+        // name) and until when — used below to swap a lender's "Request 2h" button
+        // for a "Borrowing · H:MM" status pill on the row you're already borrowing from.
+        let myRow = selfUserId.flatMap { id in board.first { $0.userId == id } }
+
         let sorted = board.sorted { ($0.fiveHourPct ?? -1) > ($1.fiveHourPct ?? -1) }
         for row in sorted {
-            let view = teamRow(row, isSelf: selfUserId != nil && row.userId == selfUserId)
+            let view = teamRow(
+                row,
+                isSelf: selfUserId != nil && row.userId == selfUserId,
+                myBorrowingFrom: myRow?.borrowingFrom,
+                myBorrowingUntil: myRow?.borrowingUntil
+            )
             stack.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
@@ -1260,10 +1316,20 @@ final class UsagePanelView: NSView {
     }
 
     /// One row of the team board (mockup `.team-row`): avatar + name/reset (and
-    /// a trailing "Request 2h" button on lendable rows) on top; then any
+    /// a trailing "Request 2h" button on lendable rows, or a "Borrowing · H:MM"
+    /// pill on the row you're already borrowing from) on top; then any
     /// borrow/lend pill on its own full-width line; then a slim level-tinted
     /// mini-bar + % — all indented past the avatar so they align under the name.
-    private func teamRow(_ row: BoardRow, isSelf: Bool) -> NSView {
+    ///
+    /// `myBorrowingFrom`/`myBorrowingUntil` are the current user's own active
+    /// borrow (lender display name + unix end time), used only to decide the
+    /// trailing affordance; nil when the user isn't borrowing.
+    private func teamRow(
+        _ row: BoardRow,
+        isSelf: Bool,
+        myBorrowingFrom: String? = nil,
+        myBorrowingUntil: Int? = nil
+    ) -> NSView {
         let container = NSStackView()
         container.orientation = .vertical
         container.alignment = .leading
@@ -1305,13 +1371,21 @@ final class UsagePanelView: NSView {
         topSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         top.addArrangedSubview(topSpacer)
 
-        // "Request 2h" stays on the name line (right side). The borrow/lend pills
-        // move to their own full-width line(s) below, so they never compete with
-        // this button for width and truncate.
-        if !isSelf, row.availableToLend == true {
-            top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
-                self?.onRequestBorrow(row.userId)
-            })
+        // Trailing affordance on the name line (right side). If the user is
+        // already borrowing FROM this teammate, show a non-interactive
+        // "Borrowing · H:MM" status pill instead of another request button —
+        // even if this teammate is no longer flagged `availableToLend` (they're
+        // lending to you). Otherwise a lendable teammate keeps "Request 2h". The
+        // borrow/lend pills below move to their own full-width line(s), so this
+        // trailing item never competes with them for width and truncates.
+        if !isSelf {
+            if let myBorrowingFrom, row.displayName == myBorrowingFrom {
+                top.addArrangedSubview(pillTag("Borrowing · \(borrowCountdownText(until: myBorrowingUntil))", style: .borrow))
+            } else if row.availableToLend == true {
+                top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
+                    self?.onRequestBorrow(row.userId)
+                })
+            }
         }
 
         container.addArrangedSubview(top)
@@ -2695,16 +2769,20 @@ private func relativeResetText(_ date: Date) -> String {
     return "in \(minutes)m"
 }
 
+/// Formats a duration in seconds as `H:MM` (e.g. `0:26`, `1:23`). Clamps
+/// negatives to `0:00`, so an expired window reads as `0:00` rather than a
+/// negative/garbage duration.
+private func formatHMM(_ seconds: TimeInterval) -> String {
+    let total = max(0, Int(seconds))
+    return String(format: "%d:%02d", total / 3_600, (total % 3_600) / 60)
+}
+
 /// Formats the time remaining until `until` (unix time) as `H:MM`, for the
 /// "borrowing from … · <countdown>" tag on the team page. Returns `0:00` when
-/// `until` is nil or already in the past — a borrow window shown as expired
-/// rather than a negative/garbage duration.
+/// `until` is nil or already in the past.
 private func borrowCountdownText(until: Int?) -> String {
     guard let until else { return "0:00" }
-    let remaining = max(0, until - Int(Date().timeIntervalSince1970))
-    let hours = remaining / 3_600
-    let minutes = (remaining % 3_600) / 60
-    return String(format: "%d:%02d", hours, minutes)
+    return formatHMM(TimeInterval(until - Int(Date().timeIntervalSince1970)))
 }
 
 private func relative(_ date: Date) -> String {
