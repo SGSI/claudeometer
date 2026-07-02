@@ -3,6 +3,25 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.2.4] — 2026-07-02
+
+### Added
+- **Borrow-flow notifications.** The borrower is alerted when a request is
+  approved, declined, about to end (~10 min), or has ended; the lender's request
+  notification gains **Approve / Reject** actions; and the lender is told when a
+  borrowed account is returned — alongside the existing usage-threshold alerts.
+
+### Changed
+- Proper reverse-DNS bundle identifier (`com.sgsi.claudeometer`) + ad-hoc
+  code-signing, so the app has a consistent, registrable identity.
+
+### Known limitation
+- macOS **blocks notification delivery for unsigned / ad-hoc builds**
+  (`UNErrorDomain 1` — "Notifications are not allowed for this application"). The
+  notification code above is complete but stays **dormant until the app ships
+  Developer ID-signed + notarized** (planned). The identifier change may also
+  re-prompt once for Keychain + notification permission after upgrading.
+
 ## [0.2.3] — 2026-07-02
 
 ### Changed
@@ -80,6 +99,7 @@ Claudeometer grows from a personal usage meter into an opt-in **team account-poo
 - Reads the Claude Code OAuth token from the macOS Keychain; everything stays on your Mac,
   no telemetry.
 
+[0.2.4]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.4
 [0.2.3]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.3
 [0.2.2]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.1
