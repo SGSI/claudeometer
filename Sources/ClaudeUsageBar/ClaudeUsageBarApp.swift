@@ -77,11 +77,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var teamController = TeamController()
     private lazy var borrowController = BorrowController(multiAccount: multiAccount)
     private var notifiedIncomingBorrowIds: Set<String> = []
+    private var notifiedApprovedIds: Set<String> = []
+    private var notifiedDeclinedIds: Set<String> = []
+    private var lastLendingTo: Set<String> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Actionable Approve/Reject buttons on the lender's incoming-request
+        // notification (see `notifyNewIncomingBorrowRequests`, which tags its
+        // content with this category, and `userNotificationCenter(_:didReceive:)`
+        // below, which handles the button taps).
+        let approveAction = UNNotificationAction(identifier: "APPROVE", title: "Approve", options: [.authenticationRequired])
+        let rejectAction = UNNotificationAction(identifier: "REJECT", title: "Reject", options: [.destructive])
+        let borrowRequestCategory = UNNotificationCategory(
+            identifier: "BORROW_REQUEST", actions: [approveAction, rejectAction], intentIdentifiers: [], options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([borrowRequestCategory])
 
         let initialImage = makeStatusImage(text: "...", color: .systemBlue, phase: 0)
         statusItem = NSStatusBar.system.statusItem(withLength: initialImage.size.width + 8)
@@ -106,6 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.renderPopover(status: self?.statusMessage)
                 self?.renderStatusImage()
             }
+        }
+        multiAccount.onBorrowEndingSoon = { [weak self] label in
+            self?.sendBorrowEndingSoonNotification(accountLabel: label)
+        }
+        multiAccount.onBorrowEnded = { [weak self] _ in
+            self?.sendBorrowEndedNotification()
         }
         multiAccount.start()
         startTeam()
@@ -556,11 +575,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// and again after the relay URL changes.
     private func startTeam() {
         teamController.onChange = { [weak self] in
-            Task { @MainActor in self?.renderPopover(status: self?.statusMessage) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.notifyReturnedBorrows(board: self.teamController.board, selfUserId: self.teamController.userId)
+                self.renderPopover(status: self.statusMessage)
+            }
         }
         borrowController.onChange = { [weak self] in
             Task { @MainActor in
                 self?.notifyNewIncomingBorrowRequests()
+                self?.notifyOutgoingBorrowUpdates()
                 self?.renderPopover(status: self?.statusMessage)
             }
         }
@@ -685,9 +709,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             content.title = "Claudeometer · borrow request"
             content.body = "\(request.requesterName) wants \(request.hours)h of your Claude."
             content.sound = .default
+            // Lets the notification surface Approve/Reject actions (registered in
+            // `applicationDidFinishLaunching`) and lets `userNotificationCenter(_:didReceive:)`
+            // find the matching request when a button is tapped.
+            content.categoryIdentifier = "BORROW_REQUEST"
+            content.userInfo = ["requestId": request.requestId]
             let identifier = "claudeometer-borrow-\(request.requestId)"
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
         }
+    }
+
+    /// Fires a local notification when one of our own outgoing borrow requests
+    /// is approved (or already picked up) or declined, mirroring
+    /// `notifyNewIncomingBorrowRequests` above. Dedup'd by `requestId` in two
+    /// separate sets so each request notifies at most once per outcome,
+    /// rather than re-firing on every ~8s `borrowController` poll.
+    private func notifyOutgoingBorrowUpdates() {
+        for request in borrowController.outgoing {
+            if request.status == "approved" || request.status == "picked_up" {
+                guard !notifiedApprovedIds.contains(request.requestId) else { continue }
+                notifiedApprovedIds.insert(request.requestId)
+                let content = UNMutableNotificationContent()
+                content.title = "Claudeometer · borrow approved"
+                content.body = "\(request.lenderName) approved your request — you're on their quota for \(request.hours)h."
+                content.sound = .default
+                let identifier = "claudeometer-borrow-approved-\(request.requestId)"
+                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+            } else if request.status == "rejected" {
+                guard !notifiedDeclinedIds.contains(request.requestId) else { continue }
+                notifiedDeclinedIds.insert(request.requestId)
+                let content = UNMutableNotificationContent()
+                content.title = "Claudeometer · borrow declined"
+                content.body = "\(request.lenderName) declined your borrow request."
+                content.sound = .default
+                let identifier = "claudeometer-borrow-declined-\(request.requestId)"
+                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+            }
+        }
+    }
+
+    /// Posted from `MultiAccountController.onBorrowEndingSoon`, ~10 minutes
+    /// before an active borrow's auto-revert timer fires. `accountLabel` is the
+    /// borrowed account's label ("krish (borrowed)"); the trailing " (borrowed)"
+    /// is stripped for display, mirroring `UsagePanelView.borrowingBanner`.
+    private func sendBorrowEndingSoonNotification(accountLabel: String) {
+        let suffix = " (borrowed)"
+        let name = accountLabel.hasSuffix(suffix) ? String(accountLabel.dropLast(suffix.count)) : accountLabel
+        let content = UNMutableNotificationContent()
+        content.title = "Claudeometer · borrow ending soon"
+        content.body = "\(name)'s quota ends in ~10 min."
+        content.sound = .default
+        let identifier = "claudeometer-borrow-ending-soon-\(Int(Date().timeIntervalSince1970))"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+
+    /// Posted from `MultiAccountController.onBorrowEnded`, only on the
+    /// AUTO-revert path — a manual "Switch back to Me" is user-initiated and
+    /// never triggers this (see `MultiAccountController.switchBack(notify:)`).
+    private func sendBorrowEndedNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Claudeometer · borrow ended"
+        content.body = "Borrow ended — you're back on your own account."
+        content.sound = .default
+        let identifier = "claudeometer-borrow-ended-\(Int(Date().timeIntervalSince1970))"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+
+    /// Lender-side notification: fires when a teammate stops appearing in the
+    /// current user's own `lendingTo` list on the team board — i.e. they
+    /// finished borrowing this account. Compares against `lastLendingTo`
+    /// (dedup: only notifies on the transition out, never re-fires while a
+    /// borrow is still active, and never fires before enrollment/self-row
+    /// lookup succeeds).
+    private func notifyReturnedBorrows(board: [BoardRow], selfUserId: String?) {
+        guard let selfUserId, let myRow = board.first(where: { $0.userId == selfUserId }) else { return }
+        let currentLendingTo = Set(myRow.lendingTo ?? [])
+        let returned = lastLendingTo.subtracting(currentLendingTo)
+        for name in returned {
+            let content = UNMutableNotificationContent()
+            content.title = "Claudeometer · borrow returned"
+            content.body = "\(name) finished borrowing your account."
+            content.sound = .default
+            let identifier = "claudeometer-borrow-returned-\(name)-\(Int(Date().timeIntervalSince1970))"
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+        }
+        lastLendingTo = currentLendingTo
     }
 
     private func warnClaudeRunning() {
@@ -745,6 +851,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
+    }
+
+    /// Handles the Approve/Reject actions on the "borrow request" notification
+    /// (registered as the `BORROW_REQUEST` category in
+    /// `applicationDidFinishLaunching`). The async form of this delegate method
+    /// (mirroring `willPresent` above) completes automatically on return — no
+    /// manual completion handler to invoke.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let action = response.actionIdentifier
+        guard action == "APPROVE" || action == "REJECT" else { return }
+        guard let requestId = response.notification.request.content.userInfo["requestId"] as? String else { return }
+        await handleBorrowRequestAction(action, requestId: requestId)
+    }
+
+    /// Looks up `requestId` in the still-live `borrowController.incoming` and
+    /// approves/rejects it. If the request is no longer present (already
+    /// decided, revoked, or expired), this is a silent no-op.
+    @MainActor
+    private func handleBorrowRequestAction(_ action: String, requestId: String) async {
+        guard let request = borrowController.incoming.first(where: { $0.requestId == requestId }) else { return }
+        if action == "APPROVE" {
+            _ = await borrowController.approve(request)
+        } else {
+            _ = await borrowController.reject(request)
+        }
     }
 }
 

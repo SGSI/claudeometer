@@ -10,6 +10,11 @@ final class MultiAccountController {
     private let manager: AccountManager
     private let detector = ClaudeProcessDetector()
     private var revertTimer: Timer?
+    /// One-shot timer firing 10 minutes before `revertTimer`, so the borrower
+    /// gets an early warning instead of only finding out when the badge
+    /// disappears. Invalidated everywhere `revertTimer` is (see
+    /// `scheduleRevert`/`switchBack`).
+    private var endingSoonTimer: Timer?
 
     /// Cached copy of `manager.snapshot()`. Refreshed only on `reload()` (called
     /// from `start()` and after every mutation) so the 12fps status-image redraw
@@ -18,6 +23,15 @@ final class MultiAccountController {
 
     /// Called whenever accounts or borrow state change, so the UI can re-render.
     var onChange: (() -> Void)?
+
+    /// Fires ~10 minutes before an active borrow auto-reverts, with the
+    /// borrowed account's label. `AppDelegate` posts a local notification.
+    var onBorrowEndingSoon: ((String) -> Void)?
+
+    /// Fires when a borrow ends via the AUTO-revert path (the revert timer
+    /// firing) — never for a user-initiated "Switch back to Me". `AppDelegate`
+    /// posts a local notification.
+    var onBorrowEnded: ((String) -> Void)?
 
     /// Outcome of attempting to switch to an account, so the caller can surface
     /// real failures instead of silently no-oping.
@@ -209,23 +223,44 @@ final class MultiAccountController {
         }
     }
 
-    func switchBack() {
+    /// Reverts an active borrow back to the self account. `notify` should only
+    /// be `true` from the AUTO-revert path (the revert timer firing) — a
+    /// manual "Switch back to Me" tap is user-initiated and shouldn't post a
+    /// "borrow ended" notification. The borrowed label is captured BEFORE
+    /// `manager.revert()` runs, since `state` no longer has it afterward.
+    func switchBack(notify: Bool = false) {
+        let borrowedLabel = state.activeBorrow.flatMap { state.account(id: $0.activeAccountId)?.label }
         try? manager.revert()
         revertTimer?.invalidate()
         revertTimer = nil
+        endingSoonTimer?.invalidate()
+        endingSoonTimer = nil
         reload()
         onChange?()
+        if notify, let borrowedLabel {
+            onBorrowEnded?(borrowedLabel)
+        }
     }
 
     func isClaudeRunning() -> Bool { detector.isClaudeRunning() }
 
     private func scheduleRevert() {
         revertTimer?.invalidate()
-        guard let borrow = state.activeBorrow else { return }
+        endingSoonTimer?.invalidate()
+        guard let borrow = state.activeBorrow, let active = state.account(id: borrow.activeAccountId) else { return }
         let delay = max(1, borrow.remaining(now: Date()))
+        let label = active.label
         revertTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.switchBack()
+                // AUTO-revert path — notify the borrower their access just ended.
+                self?.switchBack(notify: true)
+            }
+        }
+        if delay > 600 {
+            endingSoonTimer = Timer.scheduledTimer(withTimeInterval: delay - 600, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    self?.onBorrowEndingSoon?(label)
+                }
             }
         }
     }
