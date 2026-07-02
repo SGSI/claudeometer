@@ -3,6 +3,21 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.2.1] — 2026-07-02
+
+### Fixed
+- **Board attribution while borrowing.** When you're on a teammate's borrowed
+  account, the app now reports your **own** account's usage (not the lent one), and
+  the board shows who is **borrowing from / lending to** whom — so a borrower is no
+  longer mistaken for a heavy user of their own quota.
+
+### Added
+- **In-app team setup.** The app **prompts for the relay URL on first launch**
+  (skippable) and adds a **"Set team relay URL…"** item to the ••• menu — both apply
+  immediately, with no config files or relaunch. Install via Homebrew and configure
+  entirely in-app.
+- Active-borrow tags ("borrowing from…", "lending to…") on the Team page.
+
 ## [0.2.0] — 2026-07-02 — Team mode
 
 Claudeometer grows from a personal usage meter into an opt-in **team account-pooling** tool.
@@ -37,5 +52,6 @@ Claudeometer grows from a personal usage meter into an opt-in **team account-poo
 - Reads the Claude Code OAuth token from the macOS Keychain; everything stays on your Mac,
   no telemetry.
 
+[0.2.1]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.0
 [0.1.0]: https://github.com/SGSI/claudeometer/releases/tag/v0.1.0

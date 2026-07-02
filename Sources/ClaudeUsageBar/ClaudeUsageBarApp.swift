@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var nextAutomaticRefreshAt = Date.distantPast
     private var rateLimitedUntil: Date?
     private let multiAccount = MultiAccountController()
-    private let teamController = TeamController()
+    private var teamController = TeamController()
     private lazy var borrowController = BorrowController(multiAccount: multiAccount)
     private var notifiedIncomingBorrowIds: Set<String> = []
 
@@ -70,22 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         multiAccount.start()
-        teamController.onChange = { [weak self] in
-            Task { @MainActor in
-                self?.renderPopover(status: self?.statusMessage)
-            }
-        }
-        teamController.start()
-        borrowController.onChange = { [weak self] in
-            Task { @MainActor in
-                self?.notifyNewIncomingBorrowRequests()
-                self?.renderPopover(status: self?.statusMessage)
-            }
-        }
-        if teamController.isEnrolled {
-            borrowController.start()
+        startTeam()
+        if RelayConfig.isConfigured {
+            if !teamController.isEnrolled { promptJoinTeam() }
         } else {
-            promptJoinTeam()
+            promptSetupTeam()
         }
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -502,6 +491,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// once at launch when not yet enrolled, and again from the "Join team…"
     /// overflow-menu item. Leaving the name empty (or cancelling) just skips —
     /// the user can join later from that same menu item.
+    /// Wires the team controllers' callbacks and starts them. Polling only runs
+    /// when the relay is configured and the user is enrolled. Called at launch
+    /// and again after the relay URL changes.
+    private func startTeam() {
+        teamController.onChange = { [weak self] in
+            Task { @MainActor in self?.renderPopover(status: self?.statusMessage) }
+        }
+        borrowController.onChange = { [weak self] in
+            Task { @MainActor in
+                self?.notifyNewIncomingBorrowRequests()
+                self?.renderPopover(status: self?.statusMessage)
+            }
+        }
+        teamController.start()
+        if teamController.isEnrolled { borrowController.start() }
+    }
+
+    /// Re-creates the team controllers so a newly-saved relay URL takes effect
+    /// immediately (the URL is resolved at controller init — no relaunch), then
+    /// offers enrollment if not yet on the team.
+    private func reconfigureTeam() {
+        teamController = TeamController()
+        borrowController = BorrowController(multiAccount: multiAccount)
+        startTeam()
+        renderPopover(status: statusMessage)
+        if RelayConfig.isConfigured, !teamController.isEnrolled { promptJoinTeam() }
+    }
+
+    /// First-launch prompt to point the app at the team relay. Skippable — with
+    /// no relay set, Claudeometer stays a personal usage meter.
+    private func promptSetupTeam() {
+        let alert = NSAlert()
+        alert.messageText = "Connect to your team?"
+        alert.informativeText = "Enter your team's relay URL to see the team usage board and borrow Claude quota. You can skip and set it later from the ••• menu."
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Skip")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "https://relay.yourteam.example.com"
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        if saveRelayURL(trimmed) { reconfigureTeam() }
+    }
+
+    /// Writes the relay URL to the local config file `RelayConfig.resolve()` reads.
+    @discardableResult
+    private func saveRelayURL(_ url: String) -> Bool {
+        guard let relayFileURL = Self.relayConfigFileURL() else { return false }
+        do {
+            try FileManager.default.createDirectory(
+                at: relayFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try (url + "\n").write(to: relayFileURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            showErrorAlert(title: "Couldn't save relay URL", message: error.localizedDescription)
+            return false
+        }
+    }
+
     private func promptJoinTeam() {
         // Team features require a locally-configured relay URL (see RelayConfig).
         // Without one — e.g. a fresh clone of the public repo — stay a personal
@@ -534,9 +583,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// becomes available. Reached from the "Set team relay URL…" overflow-menu
     /// item, which is always visible (unlike "Join team…").
     ///
-    /// Intentionally does NOT touch `teamController`/`borrowController` — the
-    /// relay URL is only resolved at process launch, so a saved change only
-    /// takes effect after the user quits and reopens the app.
+    /// On save it applies immediately via `reconfigureTeam()` (re-initializing the
+    /// team controllers with the new URL) — no relaunch needed.
     @objc private func promptSetTeamRelayURL() {
         guard let relayFileURL = Self.relayConfigFileURL() else { return }
         let currentValue = (try? String(contentsOf: relayFileURL, encoding: .utf8))?
@@ -556,21 +604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        do {
-            try FileManager.default.createDirectory(
-                at: relayFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try (trimmed + "\n").write(to: relayFileURL, atomically: true, encoding: .utf8)
-        } catch {
-            showErrorAlert(title: "Couldn't save relay URL", message: error.localizedDescription)
-            return
-        }
-
-        let saved = NSAlert()
-        saved.messageText = "Saved — quit and reopen Claudeometer to enable team mode."
-        saved.addButton(withTitle: "OK")
-        saved.runModal()
+        if saveRelayURL(trimmed) { reconfigureTeam() }
     }
 
     /// `~/Library/Application Support/Claudeometer/relay-url` — the same path
