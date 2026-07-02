@@ -376,12 +376,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func startBlinking(title: String) {
+        // Keep the badge's number fresh on every poll — the blink timer reads
+        // `currentTitle` live, so re-entering at 90–100% updates the shown %
+        // instead of freezing at the value captured when blinking first started.
+        currentTitle = title
         if blinkTimer == nil {
             blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.blinkOn.toggle()
-                    self.setTitle(title, color: self.blinkOn ? .systemRed : .controlBackgroundColor)
+                    self.setTitle(self.currentTitle, color: self.blinkOn ? .systemRed : .controlBackgroundColor)
                 }
             }
         }
