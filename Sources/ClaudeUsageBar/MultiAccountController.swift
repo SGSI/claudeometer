@@ -75,6 +75,19 @@ final class MultiAccountController {
     /// revoke the stale borrow so the board's "borrowing from…" tag clears.
     var isBorrowing: Bool { state.activeBorrow != nil }
 
+    /// The Keychain service holding the user's OWN credential — the self vault
+    /// item while borrowing, else the live Claude Code item.
+    func ownUsageService(claudeCodeService: String) -> String {
+        state.ownUsageKeychainService(claudeCodeService: claudeCodeService)
+    }
+
+    /// Label + remaining time of the active borrow, for the popover banner.
+    var activeBorrowStatus: (label: String, remaining: TimeInterval)? {
+        guard let borrow = state.activeBorrow,
+              let active = state.account(id: borrow.activeAccountId) else { return nil }
+        return (active.label, max(0, borrow.remaining(now: Date())))
+    }
+
     /// Builds the account section for the `•••` menu, from the cached snapshot.
     func accountMenuItems(target: AnyObject) -> [NSMenuItem] {
         let file = state
@@ -85,6 +98,10 @@ final class MultiAccountController {
         items.append(header)
 
         for account in file.accounts {
+            // Borrowed accounts are ephemeral one-time credentials — never list them
+            // as manually switchable. The active borrow surfaces via the menu-bar
+            // badge and the "Switch back to Me" item below.
+            if !account.isSelf && (account.isBorrowed || account.label.hasSuffix("(borrowed)")) { continue }
             let active = file.activeBorrow?.activeAccountId == account.id
                 || (file.activeBorrow == nil && account.isSelf)
             let item = NSMenuItem(title: account.label, action: #selector(AppDelegate.accountMenuTapped(_:)),

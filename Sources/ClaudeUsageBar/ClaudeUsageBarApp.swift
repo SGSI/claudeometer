@@ -160,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     self.renderPopover(status: self.statusMessage)
                 }
                 Task {
-                    await self.postUsageToTeam(snapshot)
+                    await self.postOwnUsageToTeam(active: snapshot)
                 }
             } catch {
                 self.handleRefreshError(error)
@@ -191,6 +191,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if utilization >= 90 { return 3 * 60 }
         if utilization >= 80 { return 4 * 60 }
         return 5 * 60
+    }
+
+    /// Posts the user's OWN account usage to the team board. The gauge snapshot
+    /// (`active`) is the live account — the lent one while borrowing — so to keep
+    /// the board reporting your real account, fetch the self vault item separately
+    /// while borrowing. When not borrowing, `active` already is your own account.
+    private func postOwnUsageToTeam(active: UsageSnapshot) async {
+        let cc = ClaudeometerConstants.claudeCodeKeychainService
+        let ownService = multiAccount.ownUsageService(claudeCodeService: cc)
+        if ownService == cc {
+            await postUsageToTeam(active)            // not borrowing → active is your own
+        } else if let own = try? await fetcher.fetch(service: ownService) {
+            await postUsageToTeam(own)               // borrowing → report your self account
+        }
+        // else: self usage unavailable (e.g. token expired mid-borrow) — skip the
+        // post rather than report the borrowed account's usage under your name.
     }
 
     /// Maps a fetched `UsageSnapshot` to the relay's usage shape and posts it
@@ -2107,8 +2123,12 @@ enum ClaudeUsageBarMain {
 }
 
 struct ClaudeUsageFetcher {
-    func fetch() async throws -> UsageSnapshot {
-        let credentials = try readCredentials()
+    /// Fetches usage for the credential stored under `service`. The caller
+    /// chooses which account to read: the live Claude Code item (the active
+    /// account — borrowed while borrowing) for the gauge, or a self vault item
+    /// for the team-board post. Defaults to the live Claude Code item.
+    func fetch(service: String = ClaudeometerConstants.claudeCodeKeychainService) async throws -> UsageSnapshot {
+        let credentials = try readCredentials(service: service)
 
         if credentials.expiresAt > 0 && credentials.expiresAt < Int64(Date().timeIntervalSince1970 * 1000) {
             throw UsageError.expiredToken
@@ -2125,17 +2145,7 @@ struct ClaudeUsageFetcher {
         )
     }
 
-    /// Which Keychain item to read for the user's OWN usage: the self account's
-    /// vault item while a borrow is active (so the meter + board show your own
-    /// numbers, not the lent account's), else the live Claude Code item.
-    private func usageKeychainService() -> String {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Claudeometer", isDirectory: true) else { return keychainService }
-        return AccountStore(directory: base).load().ownUsageKeychainService(claudeCodeService: keychainService)
-    }
-
-    private func readCredentials() throws -> OAuthCredentials {
-        let service = usageKeychainService()
+    private func readCredentials(service: String) throws -> OAuthCredentials {
         let process = Process()
         let output = Pipe()
         let error = Pipe()
