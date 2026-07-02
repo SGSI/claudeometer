@@ -249,6 +249,18 @@ Per-request approval, 2h default (presets 30m / 1h / 2h, hard cap 4h).
   device-key signatures. Network-restrict the relay (VPN / allowlist) so only the
   team's machines can reach it. Right-sized for a trusted 10-person team.
 
+### Known M1 limitations (deferred to M2)
+
+- **argv exposure:** `SecurityCLICredentialStore` passes the credential to
+  `/usr/bin/security -w` as a process argument, briefly visible in the process
+  table to same-user/root processes. Acceptable for single-user local M1;
+  replace with the Security framework `SecItemAdd`/`SecItemUpdate` C API before
+  the Teams product moves other users' tokens.
+- **non-atomic Keychain/metadata write:** the Keychain overwrite and
+  `accounts.json` save are not atomic; a crash between them can desync state
+  (borrowed account active with no recorded borrow). Fix with launch-time
+  reconciliation in M2.
+
 ---
 
 ## 10. UI / UX

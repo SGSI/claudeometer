@@ -1016,8 +1016,9 @@ public struct AccountManager {
             throw ManagerError.noActiveClaudeCredential
         }
         var file = store.load()
-        let email = blob.decoded().map { "…\($0.accessTokenSuffix)" }
-        let account = Account(id: UUID(), label: label, accountEmail: email, isSelf: isSelf, addedAt: now())
+        // accountEmail stays nil in M1 (real email arrives with the profile call in
+        // M2). Never persist any fragment of the token to disk.
+        let account = Account(id: UUID(), label: label, accountEmail: nil, isSelf: isSelf, addedAt: now())
         try credentialStore.write(service: account.keychainService, account: account.id.uuidString, blob: blob)
         if isSelf {
             file.accounts = file.accounts.map { var a = $0; a.isSelf = false; return a }
@@ -1508,4 +1509,4 @@ git commit -m "feat: wire local multi-account switching into the menu-bar UI"
 
 **Type consistency:** `CredentialBlob`, `CredentialStore` (read/write/delete/accountAttribute), `Account.keychainService`, `AccountsFile.selfAccount/account(id:)`, `ActiveBorrow(activeAccountId/selfAccountId/startedAt/revertAt)`, `BorrowDuration.presets/clamp`, `AccountManager.captureCurrent/switchTo/revert/snapshot`, and `MultiAccountController.badge/start/accountMenuItems` are used identically across the tasks that define and consume them.
 
-**Known follow-ups (out of M1 scope, noted for later milestones):** richer popover Accounts section (M1 uses the `•••` menu); cross-account gauges for non-active vaulted accounts (M2 self-reported board supersedes); the `accountEmail` here stores a token-suffix hint, not a real email (real email arrives with the profile call in M2).
+**Known follow-ups (out of M1 scope, noted for later milestones):** richer popover Accounts section (M1 uses the `•••` menu); cross-account gauges for non-active vaulted accounts (M2 self-reported board supersedes); `accountEmail` is nil in M1 — the real email arrives with the profile call in M2.

@@ -1,16 +1,27 @@
 import AppKit
+import ClaudeUsageBarCore
 import Foundation
 import UserNotifications
 
-private let keychainService = "Claude Code-credentials"
+private let keychainService = ClaudeometerConstants.claudeCodeKeychainService
 private let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 private let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
 private let settingsURL = URL(string: "https://claude.ai/settings/usage")!
+
+/// Which page of the popover is currently showing. This is the single piece of
+/// navigation state for the popover; it lives on `AppDelegate` (the owner of
+/// `popover`/`renderPopover`) and `UsagePanelView` just renders whichever page
+/// it's told to, rebuilding from scratch on every render like the rest of the panel.
+enum PopoverPage {
+    case main
+    case team
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
+    private var popoverPage: PopoverPage = .main
     private let fetcher = ClaudeUsageFetcher()
     private var snapshot: UsageSnapshot?
     private var hotSessions: [LocalSessionSummary] = []
@@ -28,6 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var firedThresholds: Set<Int> = []
     private var nextAutomaticRefreshAt = Date.distantPast
     private var rateLimitedUntil: Date?
+    private let multiAccount = MultiAccountController()
+    private let teamController = TeamController()
+    private lazy var borrowController = BorrowController(multiAccount: multiAccount)
+    private var notifiedIncomingBorrowIds: Set<String> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -48,6 +63,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         UsageHistoryStore.prune(now: Date())
         refresh()
+        multiAccount.onChange = { [weak self] in
+            Task { @MainActor in
+                self?.renderPopover(status: self?.statusMessage)
+                self?.renderStatusImage()
+            }
+        }
+        multiAccount.start()
+        teamController.onChange = { [weak self] in
+            Task { @MainActor in
+                self?.renderPopover(status: self?.statusMessage)
+            }
+        }
+        teamController.start()
+        borrowController.onChange = { [weak self] in
+            Task { @MainActor in
+                self?.notifyNewIncomingBorrowRequests()
+                self?.renderPopover(status: self?.statusMessage)
+            }
+        }
+        if teamController.isEnrolled {
+            borrowController.start()
+        } else {
+            promptJoinTeam()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshIfDue()
@@ -93,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     self.hotSessions = localSessions
                     self.renderPopover(status: self.statusMessage)
                 }
+                Task {
+                    await self.postUsageToTeam(snapshot)
+                }
             } catch {
                 self.handleRefreshError(error)
             }
@@ -122,6 +164,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if utilization >= 90 { return 3 * 60 }
         if utilization >= 80 { return 4 * 60 }
         return 5 * 60
+    }
+
+    /// Maps a fetched `UsageSnapshot` to the relay's usage shape and posts it
+    /// (best-effort — `TeamController.postUsage` logs and swallows failures),
+    /// then refreshes the team board. No-ops entirely when not enrolled.
+    private func postUsageToTeam(_ snapshot: UsageSnapshot) async {
+        let fiveHourPct = snapshot.usage.fiveHour?.utilization ?? 0
+        let sevenDayPct = snapshot.usage.sevenDay?.utilization ?? 0
+        let resetAt = snapshot.usage.fiveHour?.resetsAt.map { Int($0.timeIntervalSince1970) }
+        await teamController.postUsage(
+            fiveHourPct: fiveHourPct,
+            sevenDayPct: sevenDayPct,
+            resetAt: resetAt,
+            availableToLend: TeamController.availableToLend(fiveHourPct: fiveHourPct)
+        )
+        await teamController.refreshBoard()
     }
 
     private func apply(_ snapshot: UsageSnapshot) {
@@ -159,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             closePopover()
             return
         }
+        popoverPage = .main
         renderPopover(status: statusMessage)
         if let button = statusItem.button {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -213,10 +272,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             status: status,
             accent: accent,
             history: history,
+            page: popoverPage,
             onRefresh: { [weak self] in self?.refresh() },
             onOpenSettings: { NSWorkspace.shared.open(settingsURL) },
             onLogin: { Self.openClaudeLogin() },
-            onQuit: { NSApp.terminate(nil) }
+            onQuit: { NSApp.terminate(nil) },
+            accountItems: multiAccount.accountMenuItems(target: self),
+            teamBoard: teamController.board,
+            selfUserId: teamController.userId,
+            isTeamEnrolled: teamController.isEnrolled,
+            onJoinTeam: { [weak self] in self?.promptJoinTeam() },
+            onNavigateToTeam: { [weak self] in
+                guard let self else { return }
+                self.popoverPage = .team
+                self.renderPopover(status: self.statusMessage)
+            },
+            onNavigateBack: { [weak self] in
+                guard let self else { return }
+                self.popoverPage = .main
+                self.renderPopover(status: self.statusMessage)
+            },
+            incomingRequests: borrowController.incoming,
+            outgoingRequests: borrowController.outgoing,
+            onRequestBorrow: { [weak self] lenderId in
+                Task { @MainActor in
+                    if let error = await self?.borrowController.request(lenderId: lenderId, hours: 2) {
+                        self?.showErrorAlert(title: "Couldn't send request", message: error)
+                    }
+                }
+            },
+            onApproveBorrow: { [weak self] request in
+                Task { @MainActor in
+                    if let error = await self?.borrowController.approve(request) {
+                        self?.showErrorAlert(title: "Couldn't approve", message: error)
+                    }
+                }
+            },
+            onRejectBorrow: { [weak self] request in
+                Task { @MainActor in
+                    if let error = await self?.borrowController.reject(request) {
+                        self?.showErrorAlert(title: "Couldn't reject", message: error)
+                    }
+                }
+            },
+            onCancelOutgoingBorrow: { [weak self] requestId in
+                Task { @MainActor in
+                    await self?.borrowController.revoke(requestId: requestId)
+                }
+            }
         )
         panel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -313,6 +416,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func renderStatusImage() {
+        // While borrowing, the badge wins the label — usage polling continues
+        // underneath, it just doesn't drive the menu-bar title until we switch back.
+        if let badge = multiAccount.badge {
+            let image = makeStatusImage(text: badge.text, color: .systemOrange, phase: markPhase)
+            statusItem.length = image.size.width + 8
+            statusItem.button?.title = ""
+            statusItem.button?.attributedTitle = NSAttributedString(string: "")
+            statusItem.button?.image = image
+            statusItem.button?.imagePosition = .imageOnly
+            statusItem.button?.toolTip = "Claudeometer — borrowing \(badge.text)"
+            return
+        }
+
         let image = makeStatusImage(text: currentTitle, color: currentColor, phase: markPhase)
         statusItem.length = image.size.width + 8
         statusItem.button?.title = ""
@@ -332,6 +448,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func openSettings() {
         NSWorkspace.shared.open(settingsURL)
+    }
+
+    // MARK: multi-account menu actions
+
+    @objc func accountMenuTapped(_ sender: NSMenuItem) {
+        // Tapping the self row (no submenu) switches back; other rows use their submenu,
+        // so their own tap action never fires (AppKit routes the click to the submenu).
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw) else { return }
+        if multiAccount.isSelfAccount(id: id) { multiAccount.switchBack() }
+    }
+
+    @objc func saveCurrentAccountTapped() {
+        let alert = NSAlert()
+        alert.messageText = "Save current Claude login as…"
+        alert.informativeText = "Give this account a name (e.g. a teammate's name)."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            let label = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if !label.isEmpty, let message = multiAccount.saveCurrentAccount(label: label) {
+                showErrorAlert(title: "Couldn't save account", message: message)
+            }
+        }
+    }
+
+    @objc func useAccountTapped(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        let parts = raw.split(separator: "|")
+        guard parts.count == 2, let id = UUID(uuidString: String(parts[0])),
+              let seconds = TimeInterval(String(parts[1])) else { return }
+        switch multiAccount.useAccount(id: id, seconds: seconds) {
+        case .failed(let message):
+            showErrorAlert(title: "Couldn't switch account", message: message)
+        case .switched(claudeRunning: true):
+            warnClaudeRunning()
+        case .switched(claudeRunning: false):
+            break
+        }
+    }
+
+    @objc func switchBackTapped() {
+        multiAccount.switchBack()
+    }
+
+    // MARK: team
+
+    /// Prompts for a display name and enrolls with the relay on submit. Called
+    /// once at launch when not yet enrolled, and again from the "Join team…"
+    /// overflow-menu item. Leaving the name empty (or cancelling) just skips —
+    /// the user can join later from that same menu item.
+    private func promptJoinTeam() {
+        // Team features require a locally-configured relay URL (see RelayConfig).
+        // Without one — e.g. a fresh clone of the public repo — stay a personal
+        // usage meter and never prompt or poll.
+        guard RelayConfig.isConfigured else { return }
+        let alert = NSAlert()
+        alert.messageText = "Join your team?"
+        alert.informativeText = "Enter your name to show up on the team usage board. You can do this later from the ••• menu."
+        alert.addButton(withTitle: "Join")
+        alert.addButton(withTitle: "Not now")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "Your name"
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        Task { [weak self] in
+            if let message = await self?.teamController.enroll(name: name) {
+                self?.showErrorAlert(title: "Couldn't join team", message: message)
+            } else {
+                self?.borrowController.start()
+            }
+        }
+    }
+
+    /// Fires a local notification for each incoming borrow request not seen
+    /// before, mirroring `evaluateNotifications`/`sendThresholdNotification`
+    /// below. Dedup'd by `requestId` so a request doesn't re-notify on every
+    /// ~8s poll while it's still pending.
+    private func notifyNewIncomingBorrowRequests() {
+        for request in borrowController.incoming where !notifiedIncomingBorrowIds.contains(request.requestId) {
+            notifiedIncomingBorrowIds.insert(request.requestId)
+            let content = UNMutableNotificationContent()
+            content.title = "Claudeometer · borrow request"
+            content.body = "\(request.requesterName) wants \(request.hours)h of your Claude."
+            content.sound = .default
+            let identifier = "claudeometer-borrow-\(request.requestId)"
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+        }
+    }
+
+    private func warnClaudeRunning() {
+        let alert = NSAlert()
+        alert.messageText = "Switched — restart `claude` to use it"
+        alert.informativeText = "A claude session is running. The new account takes effect the next time you start claude; your current session is unaffected."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func showErrorAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private static func openClaudeLogin() {
@@ -380,6 +605,15 @@ final class UsagePanelView: NSView {
     private let onOpenSettings: () -> Void
     private let onLogin: () -> Void
     private let onQuit: () -> Void
+    private let accountItems: [NSMenuItem]
+    private let isTeamEnrolled: Bool
+    private let onJoinTeam: () -> Void
+    private let onNavigateToTeam: () -> Void
+    private let onNavigateBack: () -> Void
+    private let onRequestBorrow: (String) -> Void
+    private let onApproveBorrow: (IncomingRequest) -> Void
+    private let onRejectBorrow: (IncomingRequest) -> Void
+    private let onCancelOutgoingBorrow: (String) -> Void
 
     init(
         snapshot: UsageSnapshot?,
@@ -387,24 +621,60 @@ final class UsagePanelView: NSView {
         status: String?,
         accent: NSColor,
         history: [UsageHistoryPoint],
+        page: PopoverPage = .main,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
         onLogin: @escaping () -> Void,
-        onQuit: @escaping () -> Void
+        onQuit: @escaping () -> Void,
+        accountItems: [NSMenuItem] = [],
+        teamBoard: [BoardRow] = [],
+        selfUserId: String? = nil,
+        isTeamEnrolled: Bool = false,
+        onJoinTeam: @escaping () -> Void = {},
+        onNavigateToTeam: @escaping () -> Void = {},
+        onNavigateBack: @escaping () -> Void = {},
+        incomingRequests: [IncomingRequest] = [],
+        outgoingRequests: [OutgoingRequest] = [],
+        onRequestBorrow: @escaping (String) -> Void = { _ in },
+        onApproveBorrow: @escaping (IncomingRequest) -> Void = { _ in },
+        onRejectBorrow: @escaping (IncomingRequest) -> Void = { _ in },
+        onCancelOutgoingBorrow: @escaping (String) -> Void = { _ in }
     ) {
         self.onRefresh = onRefresh
         self.onOpenSettings = onOpenSettings
         self.onLogin = onLogin
         self.onQuit = onQuit
+        self.accountItems = accountItems
+        self.isTeamEnrolled = isTeamEnrolled
+        self.onJoinTeam = onJoinTeam
+        self.onNavigateToTeam = onNavigateToTeam
+        self.onNavigateBack = onNavigateBack
+        self.onRequestBorrow = onRequestBorrow
+        self.onApproveBorrow = onApproveBorrow
+        self.onRejectBorrow = onRejectBorrow
+        self.onCancelOutgoingBorrow = onCancelOutgoingBorrow
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 480))
-        build(snapshot: snapshot, hotSessions: hotSessions, status: status, accent: accent, history: history)
+        build(snapshot: snapshot, hotSessions: hotSessions, status: status, accent: accent, history: history,
+              page: page, teamBoard: teamBoard, selfUserId: selfUserId,
+              incomingRequests: incomingRequests, outgoingRequests: outgoingRequests)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func build(snapshot: UsageSnapshot?, hotSessions: [LocalSessionSummary], status: String?, accent: NSColor, history: [UsageHistoryPoint]) {
+    private func build(
+        snapshot: UsageSnapshot?,
+        hotSessions: [LocalSessionSummary],
+        status: String?,
+        accent: NSColor,
+        history: [UsageHistoryPoint],
+        page: PopoverPage,
+        teamBoard: [BoardRow],
+        selfUserId: String?,
+        incomingRequests: [IncomingRequest],
+        outgoingRequests: [OutgoingRequest]
+    ) {
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
@@ -419,6 +689,37 @@ final class UsagePanelView: NSView {
             root.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
         ])
 
+        switch page {
+        case .main:
+            buildMainPage(
+                root: root, snapshot: snapshot, hotSessions: hotSessions, status: status,
+                accent: accent, history: history, teamBoard: teamBoard, selfUserId: selfUserId,
+                incomingRequests: incomingRequests
+            )
+        case .team:
+            buildTeamPage(
+                root: root, teamBoard: teamBoard, selfUserId: selfUserId,
+                incomingRequests: incomingRequests, outgoingRequests: outgoingRequests
+            )
+        }
+
+        addFullWidth(footer(snapshot: snapshot), to: root)
+    }
+
+    /// Personal usage view: 5-hour hero, this-week windows, 24h pace, hot
+    /// sessions — plus a compact "Team ›" nav row at the bottom when enrolled.
+    /// The full team board / borrow UI lives on the team page (`buildTeamPage`).
+    private func buildMainPage(
+        root: NSStackView,
+        snapshot: UsageSnapshot?,
+        hotSessions: [LocalSessionSummary],
+        status: String?,
+        accent: NSColor,
+        history: [UsageHistoryPoint],
+        teamBoard: [BoardRow],
+        selfUserId: String?,
+        incomingRequests: [IncomingRequest]
+    ) {
         addFullWidth(header(snapshot: snapshot, accent: accent), to: root)
 
         if let status, !status.isEmpty {
@@ -441,7 +742,44 @@ final class UsagePanelView: NSView {
             }
         }
 
-        addFullWidth(footer(snapshot: snapshot), to: root)
+        if isTeamEnrolled {
+            addFullWidth(divider(), to: root)
+            addFullWidth(teamNavRow(board: teamBoard, selfUserId: selfUserId, incoming: incomingRequests), to: root)
+        }
+    }
+
+    /// Team page: reached via the "Team ›" nav row. Holds every M2/M3 team +
+    /// borrow affordance — the board, incoming requests (Approve/Reject), and
+    /// this device's own pending/approved outgoing request (Cancel).
+    private func buildTeamPage(
+        root: NSStackView,
+        teamBoard: [BoardRow],
+        selfUserId: String?,
+        incomingRequests: [IncomingRequest],
+        outgoingRequests: [OutgoingRequest]
+    ) {
+        addFullWidth(teamPageHeader(), to: root)
+        addFullWidth(divider(), to: root)
+
+        let pendingOutgoing = outgoingRequests.filter { $0.status == "pending" || $0.status == "approved" }
+
+        if !teamBoard.isEmpty {
+            addFullWidth(teamSection(teamBoard, selfUserId: selfUserId), to: root)
+        }
+
+        if !incomingRequests.isEmpty || !pendingOutgoing.isEmpty {
+            if !teamBoard.isEmpty {
+                addFullWidth(divider(), to: root)
+            }
+            addFullWidth(borrowSection(incoming: incomingRequests, outgoing: pendingOutgoing), to: root)
+        }
+
+        if teamBoard.isEmpty && incomingRequests.isEmpty && pendingOutgoing.isEmpty {
+            addFullWidth(
+                label("No teammates posting usage yet.", size: 12, weight: .regular, color: .secondaryLabelColor),
+                to: root
+            )
+        }
     }
 
     private func addFullWidth(_ view: NSView, to stack: NSStackView) {
@@ -478,6 +816,42 @@ final class UsagePanelView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(spacer)
+
+        return row
+    }
+
+    /// Header for the team page: a tappable "‹ Back" affordance (fires
+    /// `onNavigateBack`) plus a "Team" title, mirroring the personal page's
+    /// header row without duplicating the Claudeometer branding.
+    private func teamPageHeader() -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let back = TappableRow(accessibilityLabel: "Back") { [weak self] in self?.onNavigateBack() }
+        let backContent = NSStackView()
+        backContent.orientation = .horizontal
+        backContent.alignment = .centerY
+        backContent.spacing = 2
+        backContent.translatesAutoresizingMaskIntoConstraints = false
+        backContent.addArrangedSubview(label("‹", size: 17, weight: .semibold, color: .controlAccentColor))
+        backContent.addArrangedSubview(label("Back", size: 13, weight: .medium, color: .controlAccentColor))
+        back.addSubview(backContent)
+        NSLayoutConstraint.activate([
+            backContent.leadingAnchor.constraint(equalTo: back.leadingAnchor),
+            backContent.trailingAnchor.constraint(equalTo: back.trailingAnchor),
+            backContent.topAnchor.constraint(equalTo: back.topAnchor, constant: 3),
+            backContent.bottomAnchor.constraint(equalTo: back.bottomAnchor, constant: -3)
+        ])
+        row.addArrangedSubview(back)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(spacer)
+
+        row.addArrangedSubview(label("Team", size: 14, weight: .semibold, color: .labelColor))
 
         return row
     }
@@ -682,6 +1056,254 @@ final class UsagePanelView: NSView {
         return container
     }
 
+    /// Team board: one row per teammate, busiest (highest 5-hour usage) first.
+    /// Rows with no usage posted yet (`fiveHourPct == nil`) sort last.
+    private func teamSection(_ board: [BoardRow], selfUserId: String?) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        stack.addArrangedSubview(sectionHeaderLabel("TEAM"))
+
+        let sorted = board.sorted { ($0.fiveHourPct ?? -1) > ($1.fiveHourPct ?? -1) }
+        for row in sorted {
+            let view = teamRow(row, isSelf: selfUserId != nil && row.userId == selfUserId)
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        return stack
+    }
+
+    private func teamRow(_ row: BoardRow, isSelf: Bool) -> NSView {
+        let container = NSStackView()
+        container.orientation = .horizontal
+        container.alignment = .centerY
+        container.spacing = 8
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addArrangedSubview(lendDot(visible: row.availableToLend == true))
+
+        let nameStack = NSStackView()
+        nameStack.orientation = .vertical
+        nameStack.alignment = .leading
+        nameStack.spacing = 1
+        nameStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let nameText = isSelf ? "\(row.displayName) (you)" : row.displayName
+        let nameLabel = label(nameText, size: 12, weight: isSelf ? .semibold : .regular, color: .labelColor)
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameStack.addArrangedSubview(nameLabel)
+
+        if let resetAt = row.resetAt {
+            let resetDate = Date(timeIntervalSince1970: TimeInterval(resetAt))
+            let caption = label("resets \(resetText(resetDate))", size: 10, weight: .regular, color: .tertiaryLabelColor)
+            caption.maximumNumberOfLines = 1
+            caption.lineBreakMode = .byTruncatingTail
+            nameStack.addArrangedSubview(caption)
+        }
+        container.addArrangedSubview(nameStack)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        container.addArrangedSubview(spacer)
+
+        if !isSelf, row.availableToLend == true {
+            let request = ActionButton(title: "Request 2h") { [weak self] in self?.onRequestBorrow(row.userId) }
+            request.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            container.addArrangedSubview(request)
+        }
+
+        let pctText = row.fiveHourPct.map(formatPercent) ?? "—"
+        let pctColor = row.fiveHourPct.map(gradientColor(for:)) ?? NSColor.tertiaryLabelColor
+        let pct = monoLabel(pctText, size: 13, weight: .semibold, color: legibleTextColor(for: pctColor))
+        pct.alignment = .right
+        pct.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        container.addArrangedSubview(pct)
+
+        return container
+    }
+
+    /// The "BORROW" section: incoming requests (actionable — Approve/Reject)
+    /// followed by the caller's own pending/approved outgoing requests
+    /// (Cancel, which revokes). Approved-and-lent-out requests already drop
+    /// off `incoming` per `relay/PROTOCOL.md` (it only returns *pending*
+    /// requests) — the borrowed badge + "Switch back to <you>" item in the
+    /// ••• menu (from `MultiAccountController.switchToBorrowed`) cover the
+    /// lent-out/active side without duplicating that affordance here.
+    private func borrowSection(incoming: [IncomingRequest], outgoing: [OutgoingRequest]) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        stack.addArrangedSubview(sectionHeaderLabel("BORROW"))
+
+        for request in incoming {
+            let row = incomingRequestRow(request)
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        for request in outgoing {
+            let row = outgoingRequestRow(request)
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        return stack
+    }
+
+    private func incomingRequestRow(_ request: IncomingRequest) -> NSView {
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 4
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let text = label("\(request.requesterName) wants \(request.hours)h of your Claude",
+                         size: 12, weight: .regular, color: .labelColor)
+        text.maximumNumberOfLines = 2
+        text.lineBreakMode = .byTruncatingTail
+        container.addArrangedSubview(text)
+
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+
+        let approve = ActionButton(title: "Approve") { [weak self] in self?.onApproveBorrow(request) }
+        buttons.addArrangedSubview(approve)
+
+        let reject = ActionButton(title: "Reject") { [weak self] in self?.onRejectBorrow(request) }
+        buttons.addArrangedSubview(reject)
+
+        container.addArrangedSubview(buttons)
+        return container
+    }
+
+    private func outgoingRequestRow(_ request: OutgoingRequest) -> NSView {
+        let container = NSStackView()
+        container.orientation = .horizontal
+        container.alignment = .centerY
+        container.spacing = 8
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let statusText = request.status == "approved" ? "approved — picking up…" : "waiting for \(request.lenderName)…"
+        let text = label("Requested \(request.hours)h from \(request.lenderName) (\(statusText))",
+                         size: 12, weight: .regular, color: .secondaryLabelColor)
+        text.maximumNumberOfLines = 2
+        text.lineBreakMode = .byTruncatingTail
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        container.addArrangedSubview(text)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        container.addArrangedSubview(spacer)
+
+        let requestId = request.requestId
+        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.onCancelOutgoingBorrow(requestId) }
+        container.addArrangedSubview(cancel)
+
+        return container
+    }
+
+    /// Small filled dot marking a teammate as `availableToLend`; an empty (clear)
+    /// placeholder otherwise, so rows stay aligned whether or not it's shown.
+    private func lendDot(visible: Bool) -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 3
+        view.layer?.backgroundColor = (visible ? NSColor.systemGreen : NSColor.clear).cgColor
+        view.widthAnchor.constraint(equalToConstant: 6).isActive = true
+        view.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        view.toolTip = visible ? "Available to lend" : nil
+        return view
+    }
+
+    /// Compact nav row on the main page that opens the team page. Shows a
+    /// light-touch hint (pending incoming requests, lendable teammates, or a
+    /// plain member count, in that priority order) so there's a reason to tap
+    /// in even when nothing needs attention.
+    private func teamNavRow(board: [BoardRow], selfUserId: String?, incoming: [IncomingRequest]) -> NSView {
+        let row = TappableRow(accessibilityLabel: "Team") { [weak self] in self?.onNavigateToTeam() }
+        row.wantsLayer = true
+        row.layer?.cornerRadius = 10
+        row.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+
+        let content = NSStackView()
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -14),
+            content.topAnchor.constraint(equalTo: row.topAnchor, constant: 9),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -9)
+        ])
+
+        content.addArrangedSubview(label("Team", size: 13, weight: .medium, color: .labelColor))
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        content.addArrangedSubview(spacer)
+
+        if let hint = teamNavHint(board: board, selfUserId: selfUserId, incoming: incoming) {
+            content.addArrangedSubview(hint)
+        }
+
+        content.addArrangedSubview(label("›", size: 15, weight: .semibold, color: .tertiaryLabelColor))
+
+        return row
+    }
+
+    /// Picks the single most useful hint for the "Team ›" row: a pending
+    /// incoming-request badge outranks a lendable-teammate count, which
+    /// outranks a plain member count. Returns nil (no hint) once the board
+    /// has nothing to say — e.g. right after enrolling, before anyone has
+    /// posted usage yet.
+    private func teamNavHint(board: [BoardRow], selfUserId: String?, incoming: [IncomingRequest]) -> NSView? {
+        if !incoming.isEmpty {
+            return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: .systemOrange)
+        }
+        let lendable = board.filter { $0.availableToLend == true && $0.userId != selfUserId }.count
+        if lendable > 0 {
+            return label("\(lendable) lendable", size: 11, weight: .regular, color: .secondaryLabelColor)
+        }
+        if !board.isEmpty {
+            return label("\(board.count) teammate\(board.count == 1 ? "" : "s")", size: 11, weight: .regular, color: .tertiaryLabelColor)
+        }
+        return nil
+    }
+
+    /// Small rounded pill used for the incoming-request count on the nav row —
+    /// same visual language as `lendDot`/`ProgressBarView`'s rounded, tinted style.
+    private func badge(text: String, color: NSColor) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = color.withAlphaComponent(0.18).cgColor
+
+        let textLabel = monoLabel(text, size: 10, weight: .semibold, color: color)
+        container.addSubview(textLabel)
+        NSLayoutConstraint.activate([
+            textLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 7),
+            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -7),
+            textLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            textLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3)
+        ])
+        return container
+    }
+
     private func footer(snapshot: UsageSnapshot?) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
@@ -730,6 +1352,7 @@ final class UsagePanelView: NSView {
     @objc private func openTapped() { onOpenSettings() }
     @objc private func loginTapped() { onLogin() }
     @objc private func quitTapped() { onQuit() }
+    @objc private func joinTeamMenuItemTapped() { onJoinTeam() }
 
     @objc private func overflowTapped(_ sender: NSButton) {
         let menu = NSMenu()
@@ -739,11 +1362,90 @@ final class UsagePanelView: NSView {
         let loginItem = NSMenuItem(title: "Login", action: #selector(loginTapped), keyEquivalent: "")
         loginItem.target = self
         menu.addItem(loginItem)
+        if !isTeamEnrolled {
+            let joinTeamItem = NSMenuItem(title: "Join team…", action: #selector(joinTeamMenuItemTapped), keyEquivalent: "")
+            joinTeamItem.target = self
+            menu.addItem(joinTeamItem)
+        }
         menu.addItem(.separator())
+        if !accountItems.isEmpty {
+            for item in accountItems { menu.addItem(item) }
+            menu.addItem(.separator())
+        }
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitTapped), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(quitItem)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+}
+
+/// A small `NSButton` that fires a closure instead of a target/action selector,
+/// so per-row borrow actions (Request/Approve/Reject/Cancel) can capture the
+/// row's own value (lender id, request) directly instead of round-tripping
+/// through `representedObject` (which `NSButton`, unlike `NSMenuItem`, doesn't have).
+final class ActionButton: NSButton {
+    private var handler: (() -> Void)?
+
+    init(title: String, handler: @escaping () -> Void) {
+        super.init(frame: .zero)
+        self.title = title
+        self.bezelStyle = .rounded
+        self.controlSize = .small
+        self.handler = handler
+        self.target = self
+        self.action = #selector(fire)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func fire() {
+        handler?()
+    }
+}
+
+/// A plain `NSView` "row" that fires `handler` on click anywhere within its
+/// bounds — used for the "Team ›" nav row and "‹ Back" header, where the
+/// whole row (not just a small button) needs to be tappable. Plain AppKit
+/// hit-testing would otherwise return a child label first and swallow the
+/// click before it ever reaches this view, so `hitTest` is overridden to
+/// always claim points inside its own bounds.
+final class TappableRow: NSView {
+    private let handler: () -> Void
+
+    init(accessibilityLabel: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(accessibilityLabel)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview else { return super.hitTest(point) }
+        let local = convert(point, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        handler()
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        handler()
+        return true
     }
 }
 

@@ -76,6 +76,22 @@ The token and quota data never leave your machine.
 The "Hot sessions" list and pace history are derived from your local Claude Code logs
 in `~/.claude/projects`.
 
+## Team mode (optional)
+
+Claudeometer can also pool usage across a small team: see everyone's live usage on a
+board and **borrow** a teammate's Claude quota for a fixed window. A lent credential is
+**end-to-end encrypted** to the borrower — the relay only ever brokers opaque ciphertext
+and never sees a token.
+
+Team mode talks to a small **self-hosted relay** (`relay/` — a Go + SQLite service; see
+`relay/PROTOCOL.md`). The relay URL is deliberately **not** baked into this repo. Point
+the app at your own relay with either:
+
+- an environment variable: `CLAUDEOMETER_RELAY_URL=http://your-relay:8080`, or
+- a one-line file at `~/Library/Application Support/Claudeometer/relay-url` containing the URL.
+
+With neither set, Claudeometer stays a personal usage meter — no team prompts, no network.
+
 ## Build from source
 
 Requirements: macOS 13+ and a recent Swift toolchain (Xcode 16+).

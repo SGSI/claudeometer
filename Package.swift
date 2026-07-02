@@ -11,9 +11,19 @@ let package = Package(
         .executable(name: "ClaudeUsageBar", targets: ["ClaudeUsageBar"])
     ],
     targets: [
+        .target(
+            name: "ClaudeUsageBarCore",
+            path: "Sources/ClaudeUsageBarCore"
+        ),
         .executableTarget(
             name: "ClaudeUsageBar",
+            dependencies: ["ClaudeUsageBarCore"],
             path: "Sources/ClaudeUsageBar"
+        ),
+        .testTarget(
+            name: "ClaudeUsageBarCoreTests",
+            dependencies: ["ClaudeUsageBarCore"],
+            path: "Tests/ClaudeUsageBarCoreTests"
         )
     ]
 )

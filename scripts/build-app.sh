@@ -50,6 +50,16 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <!-- The team relay (configured locally via CLAUDEOMETER_RELAY_URL) may be
+       plain HTTP, so ATS's default HTTPS-only policy must be relaxed or every
+       relay request fails. This is a blanket exception (internal tool, small
+       trusted user base) — tighten to a scoped NSExceptionDomains entry once
+       the relay gets TLS. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
 </dict>
 </plist>
 PLIST

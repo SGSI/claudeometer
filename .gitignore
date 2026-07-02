@@ -16,3 +16,34 @@ Package.resolved
 # Xcode (in case it's ever opened there)
 *.xcodeproj/xcuserdata/
 DerivedData/
+
+# ---------------------------------------------------------------------------
+# Secrets / credentials / private data — NEVER commit or push to GitHub
+# ---------------------------------------------------------------------------
+# Local deploy secrets (GCP service-account keys, VM connection info, env)
+deploy/secrets/
+secrets/
+*.env
+.env
+.env.*
+# Keys / certs
+*.key
+*.pem
+*.p12
+*-key.json
+service-account*.json
+gcp-*.json
+# Relay databases & runtime data (SQLite file-based DB + any usage/audit data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+relay-data/
+# SDD scratch (worktrees, briefs, reports) — local only
+.superpowers/
+
+# Go relay build artifacts
+relay/claudeometer-relay
+relay/claudeometer-relay-*
