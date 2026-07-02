@@ -8,6 +8,40 @@ private let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 private let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
 private let settingsURL = URL(string: "https://claude.ai/settings/usage")!
 
+/// Fixed warm cream/terracotta palette matching the marketing-site mockup
+/// (`docs/index.html`'s `:root` custom properties, the `#screens` popover
+/// cards). Deliberately NOT tied to system semantic colors — the popover is a
+/// fixed-light brand surface, same as the mockup, regardless of the system's
+/// light/dark appearance (see `popover.appearance` / `effect.appearance` in
+/// `renderPopover`, which force `.aqua` so this palette always reads correctly).
+enum Theme {
+    static let card = NSColor(hex: 0xFBF6EC)
+    static let ink = NSColor(hex: 0x2A2420)
+    static let inkSoft = NSColor(hex: 0x6B6052)
+    static let inkFaint = NSColor(hex: 0x7D7263)
+    static let terra = NSColor(hex: 0xDD6B43)
+    static let terraDeep = NSColor(hex: 0xC2552F)
+    static let terraText = NSColor(hex: 0xA8481F) // accessible terracotta for small text on cream
+    static let green = NSColor(hex: 0x5D9A4F)
+    static let yellow = NSColor(hex: 0xC99A2E)
+    static let line = NSColor(hex: 0x2A2420, alpha: 0.12)
+    static let lineSoft = NSColor(hex: 0x2A2420, alpha: 0.07)
+    static let track = NSColor(hex: 0x2A2420, alpha: 0.09)
+    static let terraSoft = NSColor(hex: 0xDD6B43, alpha: 0.12)
+    static let terraSoftBorder = NSColor(hex: 0xDD6B43, alpha: 0.25)
+    static let greenSoft = NSColor(hex: 0x5D9A4F, alpha: 0.14)
+    static let greenSoftBorder = NSColor(hex: 0x5D9A4F, alpha: 0.28)
+}
+
+private extension NSColor {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
+        let red = CGFloat((hex >> 16) & 0xFF) / 255
+        let green = CGFloat((hex >> 8) & 0xFF) / 255
+        let blue = CGFloat(hex & 0xFF) / 255
+        self.init(deviceRed: red, green: green, blue: blue, alpha: alpha)
+    }
+}
+
 /// Which page of the popover is currently showing. This is the single piece of
 /// navigation state for the popover; it lives on `AppDelegate` (the owner of
 /// `popover`/`renderPopover`) and `UsagePanelView` just renders whichever page
@@ -58,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSLog("ClaudeUsageBar status item created; button exists: \(statusItem.button != nil)")
         setTitle("...", color: .secondaryLabelColor)
         popover.behavior = .transient
+        // The popover is a fixed warm-cream "brand" surface (matching the marketing
+        // mockup), not a system panel — force light appearance so the vibrancy
+        // backing and popover chrome don't fight the palette under Dark Mode.
+        popover.appearance = NSAppearance(named: .aqua)
         popover.contentSize = NSSize(width: 340, height: 620)
         renderPopover(status: "Loading...")
 
@@ -317,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
+        effect.appearance = NSAppearance(named: .aqua)
         effect.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(panel)
         NSLayoutConstraint.activate([
@@ -766,18 +805,23 @@ final class UsagePanelView: NSView {
         incomingRequests: [IncomingRequest],
         outgoingRequests: [OutgoingRequest]
     ) {
+        // Opaque cream card background (mockup `--card: #fbf6ec`), painted over the
+        // popover's system vibrancy so the fixed brand palette always reads correctly.
+        wantsLayer = true
+        layer?.backgroundColor = Theme.card.cgColor
+
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 18
+        root.spacing = 16
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            root.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            root.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            root.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+            root.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            root.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            root.topAnchor.constraint(equalTo: topAnchor, constant: 18),
+            root.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18)
         ])
 
         switch page {
@@ -867,7 +911,7 @@ final class UsagePanelView: NSView {
 
         if teamBoard.isEmpty && incomingRequests.isEmpty && pendingOutgoing.isEmpty {
             addFullWidth(
-                label("No teammates posting usage yet.", size: 12, weight: .regular, color: .secondaryLabelColor),
+                label("No teammates posting usage yet.", size: 12, weight: .regular, color: Theme.inkSoft),
                 to: root
             )
         }
@@ -882,12 +926,15 @@ final class UsagePanelView: NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = 11
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let icon = AnimatedBadgeView(accent: accent)
-        icon.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        // The badge is always brand-terra (mockup `.pop-badge`), not tinted by
+        // `accent` — usage level is already conveyed by the hero number, gauge,
+        // and week/team row colors below, so the badge stays pure branding.
+        let icon = AnimatedBadgeView()
+        icon.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 34).isActive = true
         row.addArrangedSubview(icon)
 
         let copy = NSStackView()
@@ -895,8 +942,8 @@ final class UsagePanelView: NSView {
         copy.alignment = .leading
         copy.spacing = 1
         copy.translatesAutoresizingMaskIntoConstraints = false
-        copy.addArrangedSubview(label("Claudeometer", size: 14, weight: .semibold, color: .labelColor))
-        let email = label(snapshot?.accountEmail ?? "Claude Code account", size: 11, weight: .regular, color: .secondaryLabelColor)
+        copy.addArrangedSubview(label("Claudeometer", size: 15, weight: .bold, color: Theme.ink))
+        let email = label(snapshot?.accountEmail ?? "Claude Code account", size: 12, weight: .regular, color: Theme.inkSoft)
         email.maximumNumberOfLines = 1
         email.lineBreakMode = .byTruncatingTail
         email.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -927,8 +974,8 @@ final class UsagePanelView: NSView {
         backContent.alignment = .centerY
         backContent.spacing = 2
         backContent.translatesAutoresizingMaskIntoConstraints = false
-        backContent.addArrangedSubview(label("‹", size: 17, weight: .semibold, color: .controlAccentColor))
-        backContent.addArrangedSubview(label("Back", size: 13, weight: .medium, color: .controlAccentColor))
+        backContent.addArrangedSubview(label("‹", size: 17, weight: .semibold, color: Theme.terraText))
+        backContent.addArrangedSubview(label("Back", size: 13, weight: .medium, color: Theme.terraText))
         back.addSubview(backContent)
         NSLayoutConstraint.activate([
             backContent.leadingAnchor.constraint(equalTo: back.leadingAnchor),
@@ -942,7 +989,7 @@ final class UsagePanelView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(spacer)
 
-        row.addArrangedSubview(label("Team", size: 14, weight: .semibold, color: .labelColor))
+        row.addArrangedSubview(label("Team", size: 15, weight: .bold, color: Theme.ink))
 
         return row
     }
@@ -974,28 +1021,33 @@ final class UsagePanelView: NSView {
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         headerRow.addArrangedSubview(headerSpacer)
-        headerRow.addArrangedSubview(label(moodEmoji(for: formatPercent(five)), size: 15, weight: .regular, color: .labelColor))
+        headerRow.addArrangedSubview(label(moodEmoji(for: formatPercent(five)), size: 15, weight: .regular, color: Theme.ink))
         stack.addArrangedSubview(headerRow)
         headerRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        let heroNumber = label(formatPercent(five), size: 38, weight: .bold, color: .labelColor)
-        heroNumber.font = Self.heroFont(size: 38, weight: .bold)
+        // Big serif display percentage (mockup `.hero-pct`, Fraunces 900) via
+        // AppKit's built-in New York serif design — see `heroFont` below.
+        let heroNumber = label(formatPercent(five), size: 46, weight: .black, color: Theme.ink)
+        heroNumber.font = Self.heroFont(size: 46, weight: .black)
         stack.addArrangedSubview(heroNumber)
 
         let (burn, eta) = burnRateAndETA(history: history, currentFiveHour: five)
-        let subtitle = label(heroSubtitle(burn: burn, eta: eta), size: 13, weight: .medium, color: .secondaryLabelColor)
+        let subtitle = NSTextField(labelWithAttributedString: heroSubtitleAttributed(burn: burn, eta: eta))
         subtitle.maximumNumberOfLines = 1
         subtitle.lineBreakMode = .byTruncatingTail
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(subtitle)
 
-        let bar = ProgressBarView(value: five / 100, color: accent)
+        // Horizontal green→yellow→terra gauge gradient (mockup `.bar > i`), not
+        // tinted by `accent` — the gradient itself communicates the level.
+        let bar = ProgressBarView(value: five / 100, gradientColors: [Theme.green, Theme.yellow, Theme.terra])
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.heightAnchor.constraint(equalToConstant: 10).isActive = true
         stack.addArrangedSubview(bar)
         bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         if let resetsAt = snapshot.usage.fiveHour?.resetsAt {
-            let caption = label("resets \(resetText(resetsAt))", size: 11, weight: .regular, color: .tertiaryLabelColor)
+            let caption = label("resets \(resetText(resetsAt))", size: 11, weight: .regular, color: Theme.inkFaint)
             caption.maximumNumberOfLines = 1
             caption.lineBreakMode = .byTruncatingTail
             stack.addArrangedSubview(caption)
@@ -1004,16 +1056,31 @@ final class UsagePanelView: NSView {
         return stack
     }
 
-    private func heroSubtitle(burn: Double?, eta: String?) -> String {
-        guard let burn else { return "collecting pace…" }
+    /// Builds the mockup's `<b>+14%/hr ↑</b> · full in ~3h` treatment: a bold
+    /// terra-tinted burn-rate lead followed by a muted ink-soft ETA.
+    private func heroSubtitleAttributed(burn: Double?, eta: String?) -> NSAttributedString {
+        guard let burn else {
+            return NSAttributedString(string: "collecting pace…", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: Theme.inkSoft
+            ])
+        }
         let steady = (eta == "holding steady") || burn <= 0
         let arrow = steady ? "→" : "↑"
         let sign = burn > 0 ? "+" : ""
-        let base = "\(sign)\(Int(burn))%/hr \(arrow)"
+        let lead = "\(sign)\(Int(burn))%/hr \(arrow)"
+
+        let result = NSMutableAttributedString(string: lead, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+            .foregroundColor: Theme.terraText
+        ])
         if let eta {
-            return "\(base) · \(eta)"
+            result.append(NSAttributedString(string: " · \(eta)", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: Theme.inkSoft
+            ]))
         }
-        return base
+        return result
     }
 
     private func weekSection(snapshot: UsageSnapshot) -> NSView {
@@ -1041,26 +1108,28 @@ final class UsagePanelView: NSView {
     }
 
     private func weekRow(_ title: String, _ window: UsageWindow) -> NSView {
-        let accent = gradientColor(for: window.utilization)
+        let tint = themeLevelColor(for: window.utilization)
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let name = label(title, size: 13, weight: .regular, color: .labelColor)
+        let name = label(title, size: 13, weight: .regular, color: Theme.ink)
         name.maximumNumberOfLines = 1
         name.lineBreakMode = .byTruncatingTail
         name.widthAnchor.constraint(equalToConstant: 104).isActive = true
         row.addArrangedSubview(name)
 
-        let bar = ProgressBarView(value: window.utilization / 100, color: accent)
+        let bar = ProgressBarView(value: window.utilization / 100, color: tint)
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
         bar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(bar)
 
-        let pct = monoLabel(formatPercent(window.utilization), size: 13, weight: .semibold, color: legibleTextColor(for: accent))
+        // Mockup keeps the numeric value plain ink text (`.qrow .val`) — only the
+        // bar fill is tinted by level.
+        let pct = monoLabel(formatPercent(window.utilization), size: 13, weight: .bold, color: Theme.ink)
         pct.alignment = .right
         pct.widthAnchor.constraint(equalToConstant: 42).isActive = true
         row.addArrangedSubview(pct)
@@ -1077,7 +1146,9 @@ final class UsagePanelView: NSView {
 
         stack.addArrangedSubview(sectionHeaderLabel("LAST 24H · pace"))
 
-        let spark = SparklineView(points: history, accent: accent)
+        // Mockup's pace sparkline is always brand-terra, not `accent`-tinted
+        // (its gradient stop is a fixed `#dd6b43`).
+        let spark = SparklineView(points: history, accent: Theme.terra)
         stack.addArrangedSubview(spark)
         spark.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
@@ -1106,7 +1177,7 @@ final class UsagePanelView: NSView {
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = label(session.displayName, size: 12, weight: .medium, color: .labelColor)
+        let title = label(session.displayName, size: 12, weight: .semibold, color: Theme.ink)
         title.lineBreakMode = .byTruncatingTail
         title.maximumNumberOfLines = 1
         title.toolTip = "\(session.displayName)\n\(session.path)"
@@ -1117,7 +1188,7 @@ final class UsagePanelView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(spacer)
 
-        let tokens = monoLabel(formatCompactTokens(session.tokens), size: 12, weight: .bold, color: .secondaryLabelColor)
+        let tokens = monoLabel(formatCompactTokens(session.tokens), size: 12, weight: .regular, color: Theme.inkFaint)
         tokens.alignment = .right
         tokens.maximumNumberOfLines = 1
         tokens.widthAnchor.constraint(equalToConstant: 64).isActive = true
@@ -1143,7 +1214,7 @@ final class UsagePanelView: NSView {
         } else {
             valueText = String(format: "$%.2f used", used)
         }
-        container.addArrangedSubview(monoLabel(valueText, size: 13, weight: .semibold, color: .labelColor))
+        container.addArrangedSubview(monoLabel(valueText, size: 13, weight: .semibold, color: Theme.ink))
         return container
     }
 
@@ -1168,14 +1239,24 @@ final class UsagePanelView: NSView {
         return stack
     }
 
+    /// One row of the team board (mockup `.team-row`): avatar + name/reset on
+    /// top, borrow/lend pill trailing; a slim level-tinted mini-bar + % indented
+    /// underneath, aligned past the avatar.
     private func teamRow(_ row: BoardRow, isSelf: Bool) -> NSView {
         let container = NSStackView()
-        container.orientation = .horizontal
-        container.alignment = .centerY
-        container.spacing = 8
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 7
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        container.addArrangedSubview(lendDot(visible: row.availableToLend == true))
+        let top = NSStackView()
+        top.orientation = .horizontal
+        top.alignment = .centerY
+        top.spacing = 9
+        top.translatesAutoresizingMaskIntoConstraints = false
+
+        let avatar = InitialsAvatarView(name: row.displayName, diameter: 26, fontSize: 11)
+        top.addArrangedSubview(avatar)
 
         let nameStack = NSStackView()
         nameStack.orientation = .vertical
@@ -1184,59 +1265,127 @@ final class UsagePanelView: NSView {
         nameStack.translatesAutoresizingMaskIntoConstraints = false
 
         let nameText = isSelf ? "\(row.displayName) (you)" : row.displayName
-        let nameLabel = label(nameText, size: 12, weight: isSelf ? .semibold : .regular, color: .labelColor)
+        let nameLabel = label(nameText, size: 13.5, weight: .semibold, color: Theme.ink)
         nameLabel.maximumNumberOfLines = 1
         nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         nameStack.addArrangedSubview(nameLabel)
 
         if let resetAt = row.resetAt {
             let resetDate = Date(timeIntervalSince1970: TimeInterval(resetAt))
-            let caption = label("resets \(resetText(resetDate))", size: 10, weight: .regular, color: .tertiaryLabelColor)
+            let caption = label("resets \(relativeResetText(resetDate))", size: 10.5, weight: .regular, color: Theme.inkFaint)
             caption.maximumNumberOfLines = 1
             caption.lineBreakMode = .byTruncatingTail
             nameStack.addArrangedSubview(caption)
         }
+        top.addArrangedSubview(nameStack)
+
+        let topSpacer = NSView()
+        topSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        top.addArrangedSubview(topSpacer)
 
         // Active-borrow visibility (relay v0.2.1+): surfaces that this member's
         // usage is currently propped up by someone else's quota (borrowing) or
         // that they're propping up teammates (lending), so a high `fiveHourPct`
-        // doesn't get mistaken for "heavy user of their own quota."
+        // doesn't get mistaken for "heavy user of their own quota." Independent
+        // conditions (unchanged from before) — a row can show more than one.
+        let trailing = NSStackView()
+        trailing.orientation = .horizontal
+        trailing.alignment = .centerY
+        trailing.spacing = 6
+        trailing.translatesAutoresizingMaskIntoConstraints = false
+        trailing.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         if let borrowingFrom = row.borrowingFrom {
             let countdown = borrowCountdownText(until: row.borrowingUntil)
-            let tag = label("↔ borrowing from \(borrowingFrom) · \(countdown)",
-                             size: 10, weight: .regular, color: .secondaryLabelColor)
-            tag.maximumNumberOfLines = 1
-            tag.lineBreakMode = .byTruncatingTail
-            nameStack.addArrangedSubview(tag)
+            trailing.addArrangedSubview(pillTag("↔ borrowing from \(borrowingFrom) · \(countdown)", style: .borrow))
         }
-
         if let lendingTo = row.lendingTo, !lendingTo.isEmpty {
-            let tag = label("↑ lending to \(lendingTo.joined(separator: ", "))",
-                             size: 10, weight: .regular, color: .secondaryLabelColor)
-            tag.maximumNumberOfLines = 1
-            tag.lineBreakMode = .byTruncatingTail
-            nameStack.addArrangedSubview(tag)
+            trailing.addArrangedSubview(pillTag("↑ lending to \(lendingTo.joined(separator: ", "))", style: .lend))
         }
-        container.addArrangedSubview(nameStack)
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        container.addArrangedSubview(spacer)
-
         if !isSelf, row.availableToLend == true {
-            let request = ActionButton(title: "Request 2h") { [weak self] in self?.onRequestBorrow(row.userId) }
-            request.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-            container.addArrangedSubview(request)
+            trailing.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
+                self?.onRequestBorrow(row.userId)
+            })
+        }
+        if !trailing.arrangedSubviews.isEmpty {
+            top.addArrangedSubview(trailing)
         }
 
-        let pctText = row.fiveHourPct.map(formatPercent) ?? "—"
-        let pctColor = row.fiveHourPct.map(gradientColor(for:)) ?? NSColor.tertiaryLabelColor
-        let pct = monoLabel(pctText, size: 13, weight: .semibold, color: legibleTextColor(for: pctColor))
-        pct.alignment = .right
-        pct.widthAnchor.constraint(equalToConstant: 42).isActive = true
-        container.addArrangedSubview(pct)
+        container.addArrangedSubview(top)
+        top.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
 
+        let bottom = NSStackView()
+        bottom.orientation = .horizontal
+        bottom.alignment = .centerY
+        bottom.spacing = 10
+        bottom.translatesAutoresizingMaskIntoConstraints = false
+
+        let tint = row.fiveHourPct.map(themeLevelColor(for:)) ?? Theme.track
+        let bar = ProgressBarView(value: (row.fiveHourPct ?? 0) / 100, color: tint)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        bar.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bottom.addArrangedSubview(bar)
+
+        // Mockup keeps `.team-val` plain ink text — only the bar fill is level-tinted.
+        let pctText = row.fiveHourPct.map(formatPercent) ?? "—"
+        let pct = monoLabel(pctText, size: 12, weight: .bold, color: Theme.ink)
+        pct.alignment = .right
+        pct.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        bottom.addArrangedSubview(pct)
+
+        // Indent the mini-bar row so it lines up under the name, past the avatar
+        // (mockup `.team-bottom { padding-left: 35px }`).
+        let indented = NSStackView()
+        indented.orientation = .horizontal
+        indented.alignment = .centerY
+        indented.translatesAutoresizingMaskIntoConstraints = false
+        let leadingSpacer = NSView()
+        leadingSpacer.translatesAutoresizingMaskIntoConstraints = false
+        leadingSpacer.widthAnchor.constraint(equalToConstant: 35).isActive = true
+        indented.addArrangedSubview(leadingSpacer)
+        indented.addArrangedSubview(bottom)
+        container.addArrangedSubview(indented)
+        indented.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+
+        return container
+    }
+
+    private enum PillStyle {
+        case borrow
+        case lend
+    }
+
+    /// Small rounded pill matching the mockup's `.team-tag.borrow` / `.team-tag.lend`
+    /// — soft terra for "borrowing from …", soft green for "lending to …".
+    private func pillTag(_ text: String, style: PillStyle) -> NSView {
+        let (background, border, textColor): (NSColor, NSColor, NSColor)
+        switch style {
+        case .borrow: (background, border, textColor) = (Theme.terraSoft, Theme.terraSoftBorder, Theme.terraText)
+        case .lend: (background, border, textColor) = (Theme.greenSoft, Theme.greenSoftBorder, Theme.green)
+        }
+
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 9
+        container.layer?.backgroundColor = background.cgColor
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = border.cgColor
+        container.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let textLabel = label(text, size: 10, weight: .semibold, color: textColor)
+        textLabel.maximumNumberOfLines = 1
+        textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        container.addSubview(textLabel)
+        NSLayoutConstraint.activate([
+            textLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            textLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            textLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3)
+        ])
         return container
     }
 
@@ -1251,7 +1400,7 @@ final class UsagePanelView: NSView {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         stack.addArrangedSubview(sectionHeaderLabel("BORROW"))
@@ -1270,44 +1419,87 @@ final class UsagePanelView: NSView {
         return stack
     }
 
+    /// Styled like the mockup's "Borrow request" card body: avatar, a
+    /// "**Name** wants **Nh** of your Claude." line, then full-width
+    /// Approve (filled terra) / Reject (ghost) actions.
     private func incomingRequestRow(_ request: IncomingRequest) -> NSView {
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .leading
-        container.spacing = 4
-        container.translatesAutoresizingMaskIntoConstraints = false
+        let card = NSStackView()
+        card.orientation = .vertical
+        card.alignment = .leading
+        card.spacing = 12
+        card.translatesAutoresizingMaskIntoConstraints = false
 
-        let text = label("\(request.requesterName) wants \(request.hours)h of your Claude",
-                         size: 12, weight: .regular, color: .labelColor)
-        text.maximumNumberOfLines = 2
-        text.lineBreakMode = .byTruncatingTail
-        container.addArrangedSubview(text)
+        let ask = NSStackView()
+        ask.orientation = .horizontal
+        ask.alignment = .top
+        ask.spacing = 12
+        ask.translatesAutoresizingMaskIntoConstraints = false
+
+        let avatar = InitialsAvatarView(name: request.requesterName, diameter: 34, fontSize: 13)
+        ask.addArrangedSubview(avatar)
+
+        let copy = NSStackView()
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        copy.translatesAutoresizingMaskIntoConstraints = false
+
+        let textLabel = NSTextField(labelWithAttributedString: borrowAskAttributed(name: request.requesterName, hours: request.hours))
+        textLabel.maximumNumberOfLines = 2
+        textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.translatesAutoresizingMaskIntoConstraints = false
+        copy.addArrangedSubview(textLabel)
+
+        // The relay doesn't expose the request's server-side expiry to the
+        // client, so — unlike the mockup's illustrative "expires in 4:58" —
+        // this shows real data: how long ago the request actually came in.
+        let askedAt = Date(timeIntervalSince1970: TimeInterval(request.createdAt))
+        copy.addArrangedSubview(label("asked \(relative(askedAt))", size: 10.5, weight: .regular, color: Theme.inkFaint))
+
+        ask.addArrangedSubview(copy)
+        card.addArrangedSubview(ask)
+        ask.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
 
         let buttons = NSStackView()
         buttons.orientation = .horizontal
-        buttons.spacing = 8
+        buttons.distribution = .fillEqually
+        buttons.spacing = 10
         buttons.translatesAutoresizingMaskIntoConstraints = false
+        buttons.addArrangedSubview(ActionButton(title: "Approve", style: .filled) { [weak self] in self?.onApproveBorrow(request) })
+        buttons.addArrangedSubview(ActionButton(title: "Reject", style: .ghost) { [weak self] in self?.onRejectBorrow(request) })
+        card.addArrangedSubview(buttons)
+        buttons.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
 
-        let approve = ActionButton(title: "Approve") { [weak self] in self?.onApproveBorrow(request) }
-        buttons.addArrangedSubview(approve)
+        return card
+    }
 
-        let reject = ActionButton(title: "Reject") { [weak self] in self?.onRejectBorrow(request) }
-        buttons.addArrangedSubview(reject)
-
-        container.addArrangedSubview(buttons)
-        return container
+    /// "**Arjun** wants **2h** of your Claude." (mockup `.borrow-text b`).
+    private func borrowAskAttributed(name: String, hours: Int) -> NSAttributedString {
+        let regular: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12.5, weight: .regular),
+            .foregroundColor: Theme.ink
+        ]
+        let bold: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12.5, weight: .bold),
+            .foregroundColor: Theme.ink
+        ]
+        let result = NSMutableAttributedString(string: name, attributes: bold)
+        result.append(NSAttributedString(string: " wants ", attributes: regular))
+        result.append(NSAttributedString(string: "\(hours)h", attributes: bold))
+        result.append(NSAttributedString(string: " of your Claude.", attributes: regular))
+        return result
     }
 
     private func outgoingRequestRow(_ request: OutgoingRequest) -> NSView {
         let container = NSStackView()
         container.orientation = .horizontal
         container.alignment = .centerY
-        container.spacing = 8
+        container.spacing = 10
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let statusText = request.status == "approved" ? "approved — picking up…" : "waiting for \(request.lenderName)…"
         let text = label("Requested \(request.hours)h from \(request.lenderName) (\(statusText))",
-                         size: 12, weight: .regular, color: .secondaryLabelColor)
+                         size: 12, weight: .regular, color: Theme.inkSoft)
         text.maximumNumberOfLines = 2
         text.lineBreakMode = .byTruncatingTail
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1318,24 +1510,10 @@ final class UsagePanelView: NSView {
         container.addArrangedSubview(spacer)
 
         let requestId = request.requestId
-        let cancel = ActionButton(title: "Cancel") { [weak self] in self?.onCancelOutgoingBorrow(requestId) }
+        let cancel = ActionButton(title: "Cancel", style: .ghost) { [weak self] in self?.onCancelOutgoingBorrow(requestId) }
         container.addArrangedSubview(cancel)
 
         return container
-    }
-
-    /// Small filled dot marking a teammate as `availableToLend`; an empty (clear)
-    /// placeholder otherwise, so rows stay aligned whether or not it's shown.
-    private func lendDot(visible: Bool) -> NSView {
-        let view = NSView()
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 3
-        view.layer?.backgroundColor = (visible ? NSColor.systemGreen : NSColor.clear).cgColor
-        view.widthAnchor.constraint(equalToConstant: 6).isActive = true
-        view.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        view.toolTip = visible ? "Available to lend" : nil
-        return view
     }
 
     /// Compact nav row on the main page that opens the team page. Shows a
@@ -1346,7 +1524,7 @@ final class UsagePanelView: NSView {
         let row = TappableRow(accessibilityLabel: "Team") { [weak self] in self?.onNavigateToTeam() }
         row.wantsLayer = true
         row.layer?.cornerRadius = 10
-        row.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
+        row.layer?.backgroundColor = Theme.line.cgColor
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
 
         let content = NSStackView()
@@ -1362,7 +1540,7 @@ final class UsagePanelView: NSView {
             content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -9)
         ])
 
-        content.addArrangedSubview(label("Team", size: 13, weight: .medium, color: .labelColor))
+        content.addArrangedSubview(label("Team", size: 13, weight: .medium, color: Theme.ink))
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1372,7 +1550,7 @@ final class UsagePanelView: NSView {
             content.addArrangedSubview(hint)
         }
 
-        content.addArrangedSubview(label("›", size: 15, weight: .semibold, color: .tertiaryLabelColor))
+        content.addArrangedSubview(label("›", size: 15, weight: .semibold, color: Theme.inkFaint))
 
         return row
     }
@@ -1384,20 +1562,20 @@ final class UsagePanelView: NSView {
     /// posted usage yet.
     private func teamNavHint(board: [BoardRow], selfUserId: String?, incoming: [IncomingRequest]) -> NSView? {
         if !incoming.isEmpty {
-            return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: .systemOrange)
+            return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: Theme.terraDeep)
         }
         let lendable = board.filter { $0.availableToLend == true && $0.userId != selfUserId }.count
         if lendable > 0 {
-            return label("\(lendable) lendable", size: 11, weight: .regular, color: .secondaryLabelColor)
+            return label("\(lendable) lendable", size: 11, weight: .regular, color: Theme.inkSoft)
         }
         if !board.isEmpty {
-            return label("\(board.count) teammate\(board.count == 1 ? "" : "s")", size: 11, weight: .regular, color: .tertiaryLabelColor)
+            return label("\(board.count) teammate\(board.count == 1 ? "" : "s")", size: 11, weight: .regular, color: Theme.inkFaint)
         }
         return nil
     }
 
     /// Small rounded pill used for the incoming-request count on the nav row —
-    /// same visual language as `lendDot`/`ProgressBarView`'s rounded, tinted style.
+    /// same tinted-pill language as `pillTag`/`ProgressBarView`'s rounded style.
     private func badge(text: String, color: NSColor) -> NSView {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -1424,7 +1602,7 @@ final class UsagePanelView: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let updatedText = snapshot != nil ? "Updated \(relative(snapshot!.fetchedAt))" : "Waiting for data"
-        row.addArrangedSubview(label(updatedText, size: 11, weight: .regular, color: .tertiaryLabelColor))
+        row.addArrangedSubview(label(updatedText, size: 11, weight: .regular, color: Theme.inkFaint))
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1445,7 +1623,7 @@ final class UsagePanelView: NSView {
         button.imagePosition = .imageOnly
         let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)?.withSymbolConfiguration(configuration)
-        button.contentTintColor = .secondaryLabelColor
+        button.contentTintColor = Theme.inkSoft
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 26).isActive = true
         button.heightAnchor.constraint(equalToConstant: 22).isActive = true
@@ -1454,9 +1632,10 @@ final class UsagePanelView: NSView {
 
     private static func heroFont(size: CGFloat, weight: NSFont.Weight) -> NSFont {
         // Start from the monospaced-digit system font (so the hero number never jitters
-        // as digits change), then apply the rounded design for the SF Rounded look.
+        // as digits change), then swap in the serif design — AppKit's built-in "New
+        // York" — to match the mockup's big Fraunces display percentage (`.hero-pct`).
         let base = NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
-        let descriptor = base.fontDescriptor.withDesign(.rounded) ?? base.fontDescriptor
+        let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
         return NSFont(descriptor: descriptor, size: size) ?? base
     }
 
@@ -1497,25 +1676,121 @@ final class UsagePanelView: NSView {
     }
 }
 
-/// A small `NSButton` that fires a closure instead of a target/action selector,
-/// so per-row borrow actions (Request/Approve/Reject/Cancel) can capture the
+/// A small pill-shaped button matching the mockup's `.btn-primary` (filled
+/// terra) / `.btn-ghost` (outlined) treatments, with hover/pressed feedback —
+/// AppKit's stock bezel styles can't produce this shape, so it's fully
+/// custom-drawn. Fires a closure instead of a target/action selector, so
+/// per-row borrow actions (Request/Approve/Reject/Cancel) can capture the
 /// row's own value (lender id, request) directly instead of round-tripping
 /// through `representedObject` (which `NSButton`, unlike `NSMenuItem`, doesn't have).
 final class ActionButton: NSButton {
-    private var handler: (() -> Void)?
+    enum Style {
+        case filled
+        case ghost
+    }
 
-    init(title: String, handler: @escaping () -> Void) {
+    private var handler: (() -> Void)?
+    private let style: Style
+    private var isHovering = false
+    private var isPressed = false
+    private var trackingArea: NSTrackingArea?
+
+    init(title: String, style: Style = .ghost, handler: @escaping () -> Void) {
+        self.style = style
+        self.handler = handler
         super.init(frame: .zero)
         self.title = title
-        self.bezelStyle = .rounded
-        self.controlSize = .small
-        self.handler = handler
+        isBordered = false
         self.target = self
         self.action = #selector(fire)
+        wantsLayer = true
+        font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 26).isActive = true
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let base = super.intrinsicContentSize
+        guard base.width.isFinite else { return NSSize(width: 60, height: 26) }
+        return NSSize(width: base.width + 22, height: 26)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.activeInKeyWindow, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        needsDisplay = true
+        super.mouseDown(with: event) // blocks until mouseUp; preserves NSButton's click/target flow
+        isPressed = false
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = bounds.height / 2
+        let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
+
+        let fill: NSColor
+        let border: NSColor?
+        let textColor: NSColor
+        switch style {
+        case .filled:
+            let base = Theme.terraDeep
+            if isPressed {
+                fill = base.blended(withFraction: 0.18, of: .black) ?? base
+            } else if isHovering {
+                fill = base.blended(withFraction: 0.12, of: .white) ?? base
+            } else {
+                fill = base
+            }
+            border = nil
+            textColor = .white
+        case .ghost:
+            fill = isPressed ? Theme.line : (isHovering ? Theme.lineSoft : .clear)
+            border = Theme.line
+            textColor = Theme.ink
+        }
+
+        fill.setFill()
+        path.fill()
+        if let border {
+            path.lineWidth = 1
+            border.setStroke()
+            path.stroke()
+        }
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: textColor
+        ]
+        let text = title as NSString
+        let size = text.size(withAttributes: attributes)
+        let origin = NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2)
+        text.draw(at: origin, withAttributes: attributes)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 
     @objc private func fire() {
@@ -1567,13 +1842,76 @@ final class TappableRow: NSView {
     }
 }
 
+/// Circular initials avatar (mockup `.team-avatar` / `.borrow-avatar`): a
+/// solid terra-deep disc with the person's first initial in white, bold.
+final class InitialsAvatarView: NSView {
+    private let initial: String
+    private let fontSize: CGFloat
+
+    init(name: String, diameter: CGFloat, fontSize: CGFloat) {
+        self.initial = InitialsAvatarView.firstLetter(of: name)
+        self.fontSize = fontSize
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        widthAnchor.constraint(equalToConstant: diameter).isActive = true
+        heightAnchor.constraint(equalToConstant: diameter).isActive = true
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private static func firstLetter(of name: String) -> String {
+        guard let first = name.trimmingCharacters(in: .whitespaces).first else { return "?" }
+        return String(first).uppercased()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        Theme.terraDeep.setFill()
+        NSBezierPath(ovalIn: bounds).fill()
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.white
+        ]
+        let text = initial as NSString
+        let size = text.size(withAttributes: attributes)
+        let origin = NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2 - 0.5)
+        text.draw(at: origin, withAttributes: attributes)
+    }
+}
+
+/// Rounded-cap progress track (mockup `.bar`/`.mini-bar`/`.qrow .mini`), fixed
+/// to the warm `Theme.track` background in every instance. Supports either a
+/// single-hue fill (week/team rows, tinted green/yellow/terra by level) or a
+/// multi-stop horizontal gradient fill (the 5-hour hero gauge).
 final class ProgressBarView: NSView {
+    private enum FillMode {
+        case solid(NSColor)
+        case gradient([NSColor])
+    }
+
     private let value: Double
-    private let color: NSColor
+    private let fillMode: FillMode
 
     init(value: Double, color: NSColor) {
         self.value = min(max(value, 0), 1)
-        self.color = color
+        self.fillMode = .solid(color)
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    /// Horizontal gradient fill matching the mockup's
+    /// `.bar > i { background: linear-gradient(90deg, green, yellow 62%, terra) }` —
+    /// the gradient spans whatever width is currently filled, not the full track,
+    /// so it always shows the same green→yellow→terra sweep regardless of value.
+    init(value: Double, gradientColors: [NSColor]) {
+        self.value = min(max(value, 0), 1)
+        self.fillMode = .gradient(gradientColors)
         super.init(frame: .zero)
         wantsLayer = true
     }
@@ -1585,17 +1923,33 @@ final class ProgressBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let radius = bounds.height / 2
-        let bg = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
-        NSColor.quaternaryLabelColor.setFill()
-        bg.fill()
+        let track = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
+        Theme.track.setFill()
+        track.fill()
 
         let fillWidth = bounds.width * value
         guard fillWidth > 0 else { return }
         let fillRect = NSRect(x: bounds.minX, y: bounds.minY, width: fillWidth, height: bounds.height)
         let fillRadius = min(radius, fillWidth / 2)
-        let fill = NSBezierPath(roundedRect: fillRect, xRadius: fillRadius, yRadius: fillRadius)
-        color.setFill()
-        fill.fill()
+        let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: fillRadius, yRadius: fillRadius)
+
+        switch fillMode {
+        case .solid(let color):
+            color.setFill()
+            fillPath.fill()
+        case .gradient(let colors) where colors.count >= 2:
+            NSGraphicsContext.saveGraphicsState()
+            fillPath.addClip()
+            let locations: [CGFloat] = colors.count == 3
+                ? [0, 0.62, 1]
+                : (0..<colors.count).map { CGFloat($0) / CGFloat(colors.count - 1) }
+            NSGradient(colors: colors, atLocations: locations, colorSpace: .deviceRGB)?
+                .draw(in: fillRect, angle: 0)
+            NSGraphicsContext.restoreGraphicsState()
+        case .gradient(let colors):
+            (colors.first ?? Theme.terra).setFill()
+            fillPath.fill()
+        }
     }
 }
 
@@ -1672,7 +2026,7 @@ final class SparklineView: NSView {
         base.lineWidth = 1
         base.move(to: NSPoint(x: bounds.minX, y: baseline))
         base.line(to: NSPoint(x: bounds.maxX, y: baseline))
-        NSColor.separatorColor.setStroke()
+        Theme.lineSoft.setStroke()
         base.stroke()
 
         // area fill with a downward fade
@@ -1699,7 +2053,7 @@ final class SparklineView: NSView {
     private func drawCaption(_ text: String) {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: NSColor.tertiaryLabelColor
+            .foregroundColor: Theme.inkFaint
         ]
         let size = NSString(string: text).size(withAttributes: attributes)
         let origin = NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2)
@@ -2280,19 +2634,23 @@ private func resetText(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "EEE HH:mm"
     let delta = Int(date.timeIntervalSinceNow)
-    if delta <= 0 {
-        return "\(formatter.string(from: date))"
-    }
+    guard delta > 0 else { return formatter.string(from: date) }
+    return "\(formatter.string(from: date)) · \(relativeResetText(date))"
+}
+
+/// Just the relative half of `resetText` — "in 42m" / "in 3h 58m" — used on
+/// its own for the team board's compact "resets in Xm" captions, matching the
+/// mockup's `.team-reset` (no absolute weekday/time there, unlike the
+/// personal hero gauge's fuller "resets Wed 14:15 · in 2h 50m").
+private func relativeResetText(_ date: Date) -> String {
+    let delta = Int(date.timeIntervalSinceNow)
+    guard delta > 0 else { return "now" }
     let days = delta / 86_400
     let hours = (delta % 86_400) / 3_600
     let minutes = (delta % 3_600) / 60
-    if days > 0 {
-        return "\(formatter.string(from: date)) (in \(days)d \(hours)h)"
-    }
-    if hours > 0 {
-        return "\(formatter.string(from: date)) (in \(hours)h \(minutes)m)"
-    }
-    return "\(formatter.string(from: date)) (in \(minutes)m)"
+    if days > 0 { return "in \(days)d \(hours)h" }
+    if hours > 0 { return "in \(hours)h \(minutes)m" }
+    return "in \(minutes)m"
 }
 
 /// Formats the time remaining until `until` (unix time) as `H:MM`, for the
@@ -2315,12 +2673,14 @@ private func relative(_ date: Date) -> String {
     return "\(minutes / 60)h ago"
 }
 
-private func legibleTextColor(for accent: NSColor) -> NSColor {
-    // System yellow is too light to read as text on the light panel. Keep it as a
-    // bar fill, but swap to a darker amber when it is used for text.
-    guard let rgb = accent.usingColorSpace(.deviceRGB) else { return accent }
-    let luminance = 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
-    return luminance > 0.7 ? .systemOrange : accent
+/// Discrete green/yellow/terra tiering for single-hue fills (week rows, team
+/// rows) — matches the mockup's example data thresholds, as distinct from
+/// `gradientColor(for:)`'s continuous system-color ramp used for the menu-bar
+/// title/icon (untouched — outside the popover's scope).
+private func themeLevelColor(for utilization: Double) -> NSColor {
+    if utilization >= 75 { return Theme.terra }
+    if utilization >= 40 { return Theme.yellow }
+    return Theme.green
 }
 
 @MainActor
@@ -2341,25 +2701,25 @@ private func monoLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, col
     return field
 }
 
+/// Uppercase, letter-spaced section kicker (mockup `.sec-label`/`.eyebrow-sm`:
+/// 11px/700/uppercase/`0.06em`/ink-soft). Uppercases unconditionally so call
+/// sites can pass natural-case text.
 @MainActor
-private func sectionHeaderLabel(_ text: String, tracking: CGFloat = 0) -> NSTextField {
-    let field = NSTextField(labelWithString: text)
-    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    field.font = font
-    field.textColor = .secondaryLabelColor
+private func sectionHeaderLabel(_ text: String, tracking: CGFloat = 0.4) -> NSTextField {
+    let upper = text.uppercased()
+    let font = NSFont.systemFont(ofSize: 11, weight: .bold)
+    let field = NSTextField(labelWithString: upper)
     field.lineBreakMode = .byTruncatingTail
     field.maximumNumberOfLines = 1
     field.translatesAutoresizingMaskIntoConstraints = false
-    if tracking != 0 {
-        field.attributedStringValue = NSAttributedString(
-            string: text,
-            attributes: [
-                .font: font,
-                .foregroundColor: NSColor.secondaryLabelColor,
-                .kern: tracking
-            ]
-        )
-    }
+    field.attributedStringValue = NSAttributedString(
+        string: upper,
+        attributes: [
+            .font: font,
+            .foregroundColor: Theme.inkSoft,
+            .kern: tracking
+        ]
+    )
     return field
 }
 
@@ -2368,7 +2728,7 @@ private func divider() -> NSView {
     let view = NSView()
     view.translatesAutoresizingMaskIntoConstraints = false
     view.wantsLayer = true
-    view.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    view.layer?.backgroundColor = Theme.lineSoft.cgColor
     view.heightAnchor.constraint(equalToConstant: 1).isActive = true
     return view
 }
@@ -2494,25 +2854,29 @@ private func shouldUseLightForeground(for color: NSColor) -> Bool {
     return luminance <= 0.62
 }
 
-/// Animated "Claude Code" header badge: a rounded terminal-style square with the
-/// shimmering Claude sunburst and a blinking cursor. Animates only while on screen.
+/// Animated header badge (mockup `.pop-badge`): a terra→terra-deep gradient
+/// chip with the shimmering Claude sunburst mark. Always brand-terra — not
+/// tinted by usage level, since that's already conveyed by the hero gauge and
+/// week/team row colors. Animates only while on screen.
 final class AnimatedBadgeView: NSView {
-    private let accent: NSColor
     private var phase: CGFloat = 0
     private var timer: Timer?
 
-    init(accent: NSColor) {
-        self.accent = accent
-        super.init(frame: .zero)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+    }
+
+    convenience init() {
+        self.init(frame: .zero)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 28, height: 22) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 34, height: 34) }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -2538,19 +2902,15 @@ final class AnimatedBadgeView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let badge = NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 2)
-        accent.setFill()
-        NSBezierPath(roundedRect: badge, xRadius: 6, yRadius: 6).fill()
+        let path = NSBezierPath(roundedRect: badge, xRadius: 9, yRadius: 9)
 
-        let foreground: NSColor = shouldUseLightForeground(for: accent) ? .white : NSColor(calibratedWhite: 0.08, alpha: 1)
-        let markSize: CGFloat = 13
-        let markRect = NSRect(x: badge.midX - markSize / 2, y: badge.midY - markSize / 2 + 2, width: markSize, height: markSize)
-        drawClaudeMark(in: markRect, color: foreground, phase: phase, animated: true)
+        NSGraphicsContext.saveGraphicsState()
+        path.addClip()
+        NSGradient(colors: [Theme.terra, Theme.terraDeep])?.draw(in: badge, angle: -60)
+        NSGraphicsContext.restoreGraphicsState()
 
-        // Blinking terminal cursor (~1Hz) at the bottom center.
-        if sin(phase * 2 * .pi) > 0 {
-            foreground.setFill()
-            let cursor = NSRect(x: badge.midX - 3, y: badge.minY + 2.5, width: 6, height: 2)
-            NSBezierPath(rect: cursor).fill()
-        }
+        let markSize: CGFloat = 15
+        let markRect = NSRect(x: badge.midX - markSize / 2, y: badge.midY - markSize / 2, width: markSize, height: markSize)
+        drawClaudeMark(in: markRect, color: .white, phase: phase, animated: true)
     }
 }
