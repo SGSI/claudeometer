@@ -60,11 +60,35 @@ public struct AccountManager {
     @discardableResult
     public func importAccount(label: String, blob: CredentialBlob) throws -> Account {
         var file = store.load()
-        let account = Account(id: UUID(), label: label, accountEmail: nil, isSelf: false, addedAt: now())
+        // Borrowed accounts are ephemeral — sweep any stale ones (not the active
+        // borrow) before importing, so repeated borrows don't pile up duplicates.
+        let activeId = file.activeBorrow?.activeAccountId
+        let stale = file.accounts.filter { Self.isEphemeralBorrow($0) && $0.id != activeId }.map(\.id)
+        removeAccounts(stale, from: &file)
+
+        let account = Account(id: UUID(), label: label, accountEmail: nil, isSelf: false, addedAt: now(), isBorrowed: true)
         try credentialStore.write(service: account.keychainService, account: account.id.uuidString, blob: blob)
         file.accounts.append(account)
         try store.save(file)
         return account
+    }
+
+    /// True for accounts that should not outlive their borrow: those explicitly
+    /// flagged `isBorrowed`, plus legacy "… (borrowed)" imports written before the
+    /// flag existed (never the self account).
+    private static func isEphemeralBorrow(_ account: Account) -> Bool {
+        !account.isSelf && (account.isBorrowed || account.label.hasSuffix("(borrowed)"))
+    }
+
+    /// Removes `ids` from the vault — both the metadata and the Keychain items.
+    /// Missing Keychain items are not an error.
+    private func removeAccounts(_ ids: [UUID], from file: inout AccountsFile) {
+        for id in ids {
+            if let account = file.account(id: id) {
+                try? credentialStore.delete(service: account.keychainService)
+            }
+        }
+        file.accounts.removeAll { ids.contains($0.id) }
     }
 
     /// Switches the Claude Code item to `accountId`'s blob for `duration` seconds.
@@ -110,6 +134,11 @@ public struct AccountManager {
         }
         try credentialStore.write(service: claudeCodeService, account: claudeCodeAccount(), blob: selfBlob)
         file.activeBorrow = nil
+        // Borrowed accounts don't outlive their borrow — drop them all (metadata
+        // + Keychain items) so the vault doesn't accumulate stale "… (borrowed)"
+        // entries. User-saved accounts (captureCurrent) are untouched.
+        let borrowed = file.accounts.filter { Self.isEphemeralBorrow($0) }.map(\.id)
+        removeAccounts(borrowed, from: &file)
         try store.save(file)
     }
 

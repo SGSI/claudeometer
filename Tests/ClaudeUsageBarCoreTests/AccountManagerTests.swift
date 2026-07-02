@@ -166,4 +166,51 @@ final class FakeCredentialStore: CredentialStore, @unchecked Sendable {
         #expect(borrow?.activeAccountId == imported.id)
         #expect(borrow?.selfAccountId == me.id)
     }
+
+    @Test func revertRemovesBorrowedAccount() throws {
+        let fake = FakeCredentialStore()
+        fake.items[ccService] = blob("MY-CREDS")
+        let mgr = makeManager(fake, dir: try tempDir())
+        _ = try mgr.captureCurrent(label: "Me", isSelf: true)
+        let borrowed = try mgr.importAccount(label: "krish (borrowed)", blob: blob("KRISH-CREDS"))
+        try mgr.switchTo(accountId: borrowed.id, duration: 3600)
+
+        try mgr.revert()
+
+        #expect(mgr.snapshot().accounts.contains { $0.id == borrowed.id } == false)  // metadata gone
+        #expect(fake.items[borrowed.keychainService] == nil)                          // keychain item gone
+        #expect(mgr.snapshot().accounts.filter { $0.isSelf }.count == 1)              // self remains
+    }
+
+    @Test func importSweepsStaleBorrowedAccounts() throws {
+        let fake = FakeCredentialStore()
+        fake.items[ccService] = blob("MY-CREDS")
+        let mgr = makeManager(fake, dir: try tempDir())
+        _ = try mgr.captureCurrent(label: "Me", isSelf: true)
+
+        let first = try mgr.importAccount(label: "krish (borrowed)", blob: blob("K1"))
+        let second = try mgr.importAccount(label: "krish (borrowed)", blob: blob("K2"))
+
+        let borrowed = mgr.snapshot().accounts.filter { $0.isBorrowed }
+        #expect(borrowed.count == 1)                       // no accumulation of stale borrows
+        #expect(borrowed.first?.id == second.id)
+        #expect(fake.items[first.keychainService] == nil)  // stale keychain item swept
+    }
+
+    @Test func revertKeepsUserSavedAccounts() throws {
+        let fake = FakeCredentialStore()
+        fake.items[ccService] = blob("MY-CREDS")
+        let mgr = makeManager(fake, dir: try tempDir())
+        _ = try mgr.captureCurrent(label: "Me", isSelf: true)
+        fake.items[ccService] = blob("PRIYA-CREDS")
+        let priya = try mgr.captureCurrent(label: "Priya", isSelf: false)   // user-saved, not borrowed
+        fake.items[ccService] = blob("MY-CREDS")
+        let borrowed = try mgr.importAccount(label: "krish (borrowed)", blob: blob("KRISH"))
+        try mgr.switchTo(accountId: borrowed.id, duration: 3600)
+
+        try mgr.revert()
+
+        #expect(mgr.snapshot().accounts.contains { $0.id == priya.id })                 // user-saved kept
+        #expect(mgr.snapshot().accounts.contains { $0.id == borrowed.id } == false)     // borrowed removed
+    }
 }

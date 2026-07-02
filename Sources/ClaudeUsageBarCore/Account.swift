@@ -8,13 +8,30 @@ public struct Account: Codable, Equatable, Identifiable, Sendable {
     public var accountEmail: String?
     public var isSelf: Bool
     public let addedAt: Date
+    /// True for accounts imported from a borrow handshake. Borrowed credentials
+    /// are one-time and expire with the window, so these are ephemeral — removed
+    /// on revert, unlike user-saved accounts from `captureCurrent`.
+    public var isBorrowed: Bool
 
-    public init(id: UUID, label: String, accountEmail: String?, isSelf: Bool, addedAt: Date) {
+    public init(id: UUID, label: String, accountEmail: String?, isSelf: Bool, addedAt: Date, isBorrowed: Bool = false) {
         self.id = id
         self.label = label
         self.accountEmail = accountEmail
         self.isSelf = isSelf
         self.addedAt = addedAt
+        self.isBorrowed = isBorrowed
+    }
+
+    // Custom decoder so an `accounts.json` written before `isBorrowed` existed
+    // still loads (defaults to false) instead of failing and wiping the vault.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        accountEmail = try c.decodeIfPresent(String.self, forKey: .accountEmail)
+        isSelf = try c.decode(Bool.self, forKey: .isSelf)
+        addedAt = try c.decode(Date.self, forKey: .addedAt)
+        isBorrowed = try c.decodeIfPresent(Bool.self, forKey: .isBorrowed) ?? false
     }
 
     public var keychainService: String {
