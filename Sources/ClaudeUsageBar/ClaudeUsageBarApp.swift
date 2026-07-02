@@ -1239,9 +1239,10 @@ final class UsagePanelView: NSView {
         return stack
     }
 
-    /// One row of the team board (mockup `.team-row`): avatar + name/reset on
-    /// top, borrow/lend pill trailing; a slim level-tinted mini-bar + % indented
-    /// underneath, aligned past the avatar.
+    /// One row of the team board (mockup `.team-row`): avatar + name/reset (and
+    /// a trailing "Request 2h" button on lendable rows) on top; then any
+    /// borrow/lend pill on its own full-width line; then a slim level-tinted
+    /// mini-bar + % — all indented past the avatar so they align under the name.
     private func teamRow(_ row: BoardRow, isSelf: Bool) -> NSView {
         let container = NSStackView()
         container.orientation = .vertical
@@ -1284,36 +1285,35 @@ final class UsagePanelView: NSView {
         topSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         top.addArrangedSubview(topSpacer)
 
-        // Active-borrow visibility (relay v0.2.1+): surfaces that this member's
-        // usage is currently propped up by someone else's quota (borrowing) or
-        // that they're propping up teammates (lending), so a high `fiveHourPct`
-        // doesn't get mistaken for "heavy user of their own quota." Independent
-        // conditions (unchanged from before) — a row can show more than one.
-        let trailing = NSStackView()
-        trailing.orientation = .horizontal
-        trailing.alignment = .centerY
-        trailing.spacing = 6
-        trailing.translatesAutoresizingMaskIntoConstraints = false
-        trailing.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        if let borrowingFrom = row.borrowingFrom {
-            let countdown = borrowCountdownText(until: row.borrowingUntil)
-            trailing.addArrangedSubview(pillTag("↔ borrowing from \(borrowingFrom) · \(countdown)", style: .borrow))
-        }
-        if let lendingTo = row.lendingTo, !lendingTo.isEmpty {
-            trailing.addArrangedSubview(pillTag("↑ lending to \(lendingTo.joined(separator: ", "))", style: .lend))
-        }
+        // "Request 2h" stays on the name line (right side). The borrow/lend pills
+        // move to their own full-width line(s) below, so they never compete with
+        // this button for width and truncate.
         if !isSelf, row.availableToLend == true {
-            trailing.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
+            top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
                 self?.onRequestBorrow(row.userId)
             })
-        }
-        if !trailing.arrangedSubviews.isEmpty {
-            top.addArrangedSubview(trailing)
         }
 
         container.addArrangedSubview(top)
         top.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+
+        // Active-borrow visibility (relay v0.2.1+): surfaces that this member's
+        // usage is currently propped up by someone else's quota (borrowing) or
+        // that they're propping up teammates (lending), so a high `fiveHourPct`
+        // doesn't get mistaken for "heavy user of their own quota." Independent
+        // conditions (unchanged from before) — a row can show more than one, each
+        // on its OWN full-width line so the full pill text always shows.
+        if let borrowingFrom = row.borrowingFrom {
+            let countdown = borrowCountdownText(until: row.borrowingUntil)
+            let line = pillLine(pillTag("↔ borrowing from \(borrowingFrom) · \(countdown)", style: .borrow))
+            container.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+        }
+        if let lendingTo = row.lendingTo, !lendingTo.isEmpty {
+            let line = pillLine(pillTag("↑ lending to \(lendingTo.joined(separator: ", "))", style: .lend))
+            container.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+        }
 
         let bottom = NSStackView()
         bottom.orientation = .horizontal
@@ -1387,6 +1387,34 @@ final class UsagePanelView: NSView {
             textLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3)
         ])
         return container
+    }
+
+    /// Places a borrow/lend pill on its own full-width line, indented 35pt to
+    /// align under the name (past the avatar, like the mini-bar row). The pill
+    /// sizes to its content, left-aligned; a low-priority trailing spacer absorbs
+    /// the remaining width so the pill neither stretches nor gets squeezed by the
+    /// "Request 2h" button (which now lives on the name line above).
+    private func pillLine(_ pill: NSView) -> NSView {
+        let line = NSStackView()
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 0
+        line.translatesAutoresizingMaskIntoConstraints = false
+
+        let leadingSpacer = NSView()
+        leadingSpacer.translatesAutoresizingMaskIntoConstraints = false
+        leadingSpacer.widthAnchor.constraint(equalToConstant: 35).isActive = true
+        line.addArrangedSubview(leadingSpacer)
+
+        line.addArrangedSubview(pill)
+
+        let trailingSpacer = NSView()
+        trailingSpacer.translatesAutoresizingMaskIntoConstraints = false
+        trailingSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        trailingSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        line.addArrangedSubview(trailingSpacer)
+
+        return line
     }
 
     /// The "BORROW" section: incoming requests (actionable — Approve/Reject)
