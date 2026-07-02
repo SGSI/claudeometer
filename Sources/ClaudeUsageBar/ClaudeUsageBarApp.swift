@@ -84,7 +84,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, error in
+            // macOS denies notifications to ad-hoc / unsigned apps with
+            // UNErrorDomain code 1 ("Notifications are not allowed for this
+            // application"). Delivery only works once the app is code-signed with
+            // a real Developer ID (see scripts/release.sh) — no code workaround.
+            if let error {
+                NSLog("[Claudeometer] notifications unavailable: %@ — the app must be Developer ID-signed (ad-hoc builds are denied by macOS).", error.localizedDescription)
+            }
+        }
         // Actionable Approve/Reject buttons on the lender's incoming-request
         // notification (see `notifyNewIncomingBorrowRequests`, which tags its
         // content with this category, and `userNotificationCenter(_:didReceive:)`

@@ -31,7 +31,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>ClaudeUsageBar</string>
   <key>CFBundleIdentifier</key>
-  <string>local.claude-usage-bar</string>
+  <string>com.sgsi.claudeometer</string>
   <key>CFBundleName</key>
   <string>Claudeometer</string>
   <key>CFBundleDisplayName</key>
@@ -66,5 +66,14 @@ PLIST
 
 # Allow release.sh (or callers) to stamp a version: VERSION=0.1.1 ./scripts/build-app.sh
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION:-0.2.3}" "$CONTENTS_DIR/Info.plist" 2>/dev/null || true
+
+# Ad-hoc code-sign the finished bundle. Without this the app is only
+# linker-signed with an identifier that doesn't match CFBundleIdentifier, and
+# macOS refuses to register it with Notification Center (so every notification
+# is silently dropped) and re-prompts for Keychain access unpredictably. This
+# is NOT a Developer ID signature — see scripts/release.sh for signed +
+# notarized builds — but it gives the app a consistent, registrable identity.
+# The signing identifier defaults to CFBundleIdentifier (com.sgsi.claudeometer).
+codesign --force --deep --sign - "$APP_DIR"
 
 echo "$APP_DIR"
