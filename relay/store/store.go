@@ -79,6 +79,20 @@ type BoardRow struct {
 	AvailableToLend *bool    `json:"availableToLend"`
 	LastSeen        int64    `json:"lastSeen"`
 	PostedAt        *int64   `json:"postedAt"`
+	// Active-borrow visibility — populated by the /board handler (not the query).
+	BorrowingFrom  *string  `json:"borrowingFrom"`  // display name this user is currently borrowing from, if any
+	BorrowingUntil *int64   `json:"borrowingUntil"` // unix time that borrow window ends
+	LendingTo      []string `json:"lendingTo"`      // display names this user is currently lending to
+}
+
+// ActiveBorrowRow is one currently-live borrow (picked up, still within its
+// window), used to annotate the board with who is borrowing from whom.
+type ActiveBorrowRow struct {
+	RequesterID   string
+	RequesterName string
+	LenderID      string
+	LenderName    string
+	EndsAt        int64
 }
 
 // BorrowRequest mirrors a row of the borrow_requests table.
@@ -382,6 +396,39 @@ func (s *Store) ListOutgoing(requesterID string) ([]OutgoingRequest, error) {
 		return nil, fmt.Errorf("store: list outgoing: %w", err)
 	}
 	return outgoing, nil
+}
+
+// ListActiveBorrows returns every borrow that has been picked up and is still
+// within its window (decided_at + hours), joined with both parties' names, so
+// the board can show who is currently borrowing from whom.
+func (s *Store) ListActiveBorrows(now int64) ([]ActiveBorrowRow, error) {
+	rows, err := s.db.Query(
+		`SELECT br.requester_id, req.display_name, br.lender_id, lend.display_name,
+		        br.decided_at + br.hours * 3600 AS ends_at
+		 FROM borrow_requests br
+		 JOIN users req  ON req.user_id  = br.requester_id
+		 JOIN users lend ON lend.user_id = br.lender_id
+		 WHERE br.status = 'picked_up' AND br.decided_at IS NOT NULL
+		   AND ? < br.decided_at + br.hours * 3600`,
+		now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list active borrows: %w", err)
+	}
+	defer rows.Close()
+
+	var active []ActiveBorrowRow
+	for rows.Next() {
+		var a ActiveBorrowRow
+		if err := rows.Scan(&a.RequesterID, &a.RequesterName, &a.LenderID, &a.LenderName, &a.EndsAt); err != nil {
+			return nil, fmt.Errorf("store: list active borrows: scan: %w", err)
+		}
+		active = append(active, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list active borrows: %w", err)
+	}
+	return active, nil
 }
 
 // ApproveBorrow marks a borrow request approved and stores the sealed

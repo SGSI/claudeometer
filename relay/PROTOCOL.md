@@ -55,9 +55,15 @@ Body:
 → `200` array, one row per enrolled user:
 ```json
 [ { "userId": "<uuid>", "displayName": "Sanket", "fiveHourPct": 62.0, "sevenDayPct": 20.0,
-    "resetAt": 1893456000, "availableToLend": true, "lastSeen": 1893450000, "postedAt": 1893450000 } ]
+    "resetAt": 1893456000, "availableToLend": true, "lastSeen": 1893450000, "postedAt": 1893450000,
+    "borrowingFrom": null, "borrowingUntil": null, "lendingTo": ["Priya"] } ]
 ```
-Users with no usage post yet appear with null usage fields.
+Users with no usage post yet appear with null usage fields. Each row reports the
+user's **own** account usage (a borrower keeps posting their own numbers, not the
+lent account's). Active-borrow visibility, computed from live borrow records:
+- `borrowingFrom` / `borrowingUntil` — set when this user is currently on someone
+  else's quota (the lender's display name, and the unix time the window ends).
+- `lendingTo` — display names this user is currently lending to (empty otherwise).
 
 ### `GET /health`  (unauthenticated)
 → `200 { "status": "ok", "service": "claudeometer-relay", "version": "<v>" }`

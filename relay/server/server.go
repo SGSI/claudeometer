@@ -161,6 +161,24 @@ func (s *Server) handleBoard(w http.ResponseWriter, _ *http.Request, _ *store.Us
 	if board == nil {
 		board = []store.BoardRow{}
 	}
+	// Annotate rows with who is currently borrowing from whom, so the board
+	// reflects that a borrower is on someone else's quota (not their own).
+	if actives, aerr := s.store.ListActiveBorrows(s.now().Unix()); aerr == nil {
+		byID := make(map[string]*store.BoardRow, len(board))
+		for i := range board {
+			byID[board[i].UserID] = &board[i]
+		}
+		for _, a := range actives {
+			if r := byID[a.RequesterID]; r != nil {
+				name, ends := a.LenderName, a.EndsAt
+				r.BorrowingFrom = &name
+				r.BorrowingUntil = &ends
+			}
+			if r := byID[a.LenderID]; r != nil {
+				r.LendingTo = append(r.LendingTo, a.RequesterName)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, board)
 }
 
