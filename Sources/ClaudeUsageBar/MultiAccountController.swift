@@ -69,6 +69,12 @@ final class MultiAccountController {
         return (text, true)
     }
 
+    /// True while a borrowed account is active locally. When this is false but
+    /// the relay still lists one of our borrows as live, the borrow ended
+    /// without the relay being told — `BorrowController.poll` uses this to
+    /// revoke the stale borrow so the board's "borrowing from…" tag clears.
+    var isBorrowing: Bool { state.activeBorrow != nil }
+
     /// Builds the account section for the `•••` menu, from the cached snapshot.
     func accountMenuItems(target: AnyObject) -> [NSMenuItem] {
         let file = state

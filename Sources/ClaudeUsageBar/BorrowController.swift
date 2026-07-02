@@ -78,6 +78,17 @@ final class BorrowController {
             where request.status == "approved" && !acceptedRequestIds.contains(request.requestId) {
                 await acceptApproved(request)
             }
+            // Reconcile early reverts: the app reverts a borrow locally (auto-revert
+            // timer or manual "switch back") without notifying the relay, so a
+            // reverted borrow lingers as `picked_up` within its window and the board
+            // keeps showing "borrowing from …". If we're no longer on a borrowed
+            // account, revoke any still-live borrow so the relay (and board) clear.
+            // Also covers a pickup that succeeded but whose local switch failed.
+            if !multiAccount.isBorrowing {
+                for request in inbox.outgoing where request.status == "picked_up" {
+                    try? await relay.revoke(requestId: request.requestId)
+                }
+            }
             onChange?()
         } catch {
             logger.error("poll failed: \(String(describing: error), privacy: .public)")
