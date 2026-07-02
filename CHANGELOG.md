@@ -3,6 +3,26 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.2.2] — 2026-07-02
+
+### Changed
+- **Polished popover UI** — serif usage gauge, gradient bars, teammate avatars,
+  pill tags, and a warm cream/terra palette matching the landing-page mockups.
+
+### Fixed
+- **Borrowing is now clearly shown.** While on a teammate's account, the popover
+  shows the *borrowed* account's usage with an **"on <name>'s quota · time left"**
+  banner, and that teammate's board row shows **"Borrowing · time left"** instead of
+  offering another "Request".
+- **Board attribution.** Your board entry always reports your *own* account (even
+  while borrowing), and ending a borrow (switch back / auto-revert) now **revokes it
+  on the relay** — so the "borrowing from…" tag clears instead of lingering the full
+  window.
+- **Menu-bar badge %** refreshes on every poll during the 90–100% blink (it was
+  frozen at the value from when it crossed 90%, disagreeing with the popover).
+- **No more duplicate "… (borrowed)" accounts** — borrowed logins are ephemeral
+  (removed on revert) and no longer appear in the ••• menu as reusable.
+
 ## [0.2.1] — 2026-07-02
 
 ### Fixed
@@ -52,6 +72,7 @@ Claudeometer grows from a personal usage meter into an opt-in **team account-poo
 - Reads the Claude Code OAuth token from the macOS Keychain; everything stays on your Mac,
   no telemetry.
 
+[0.2.2]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.0
 [0.1.0]: https://github.com/SGSI/claudeometer/releases/tag/v0.1.0
