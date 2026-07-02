@@ -3,6 +3,14 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.2.3] — 2026-07-02
+
+### Changed
+- **Borrow eligibility is now relative.** A teammate's "Request" button appears only
+  when *your* 5-hour usage is higher than theirs — you borrow from whoever is less
+  depleted than you — replacing the fixed "under 50%" rule. The "N lendable" count
+  follows the same logic.
+
 ## [0.2.2] — 2026-07-02
 
 ### Changed
@@ -72,6 +80,7 @@ Claudeometer grows from a personal usage meter into an opt-in **team account-poo
 - Reads the Claude Code OAuth token from the macOS Keychain; everything stays on your Mac,
   no telemetry.
 
+[0.2.3]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.3
 [0.2.2]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SGSI/claudeometer/releases/tag/v0.2.0

@@ -41,7 +41,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.2</string>
+  <string>0.2.3</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
@@ -65,6 +65,6 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 PLIST
 
 # Allow release.sh (or callers) to stamp a version: VERSION=0.1.1 ./scripts/build-app.sh
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION:-0.2.2}" "$CONTENTS_DIR/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION:-0.2.3}" "$CONTENTS_DIR/Info.plist" 2>/dev/null || true
 
 echo "$APP_DIR"

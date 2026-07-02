@@ -1306,7 +1306,8 @@ final class UsagePanelView: NSView {
                 row,
                 isSelf: selfUserId != nil && row.userId == selfUserId,
                 myBorrowingFrom: myRow?.borrowingFrom,
-                myBorrowingUntil: myRow?.borrowingUntil
+                myBorrowingUntil: myRow?.borrowingUntil,
+                myFiveHourPct: myRow?.fiveHourPct
             )
             stack.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -1324,11 +1325,20 @@ final class UsagePanelView: NSView {
     /// `myBorrowingFrom`/`myBorrowingUntil` are the current user's own active
     /// borrow (lender display name + unix end time), used only to decide the
     /// trailing affordance; nil when the user isn't borrowing.
+    /// You can request from a teammate when your OWN 5-hour usage is higher than
+    /// theirs — i.e. borrow from whoever is less depleted than you. Both sides
+    /// must have posted usage.
+    static func canBorrow(mine: Double?, lender: Double?) -> Bool {
+        guard let mine, let lender else { return false }
+        return mine > lender
+    }
+
     private func teamRow(
         _ row: BoardRow,
         isSelf: Bool,
         myBorrowingFrom: String? = nil,
-        myBorrowingUntil: Int? = nil
+        myBorrowingUntil: Int? = nil,
+        myFiveHourPct: Double? = nil
     ) -> NSView {
         let container = NSStackView()
         container.orientation = .vertical
@@ -1381,7 +1391,7 @@ final class UsagePanelView: NSView {
         if !isSelf {
             if let myBorrowingFrom, row.displayName == myBorrowingFrom {
                 top.addArrangedSubview(pillTag("Borrowing · \(borrowCountdownText(until: myBorrowingUntil))", style: .borrow))
-            } else if row.availableToLend == true {
+            } else if Self.canBorrow(mine: myFiveHourPct, lender: row.fiveHourPct) {
                 top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
                     self?.onRequestBorrow(row.userId)
                 })
@@ -1686,7 +1696,8 @@ final class UsagePanelView: NSView {
         if !incoming.isEmpty {
             return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: Theme.terraDeep)
         }
-        let lendable = board.filter { $0.availableToLend == true && $0.userId != selfUserId }.count
+        let myPct = selfUserId.flatMap { id in board.first { $0.userId == id }?.fiveHourPct }
+        let lendable = board.filter { $0.userId != selfUserId && Self.canBorrow(mine: myPct, lender: $0.fiveHourPct) }.count
         if lendable > 0 {
             return label("\(lendable) lendable", size: 11, weight: .regular, color: Theme.inkSoft)
         }
