@@ -58,6 +58,10 @@ public struct BoardRow: Codable, Equatable, Sendable {
     public let availableToLend: Bool?
     public let lastSeen: Int
     public let postedAt: Int?
+    /// Active-borrow visibility (relay v0.2.1+); nil/absent on older relays.
+    public let borrowingFrom: String?   // whom this user is currently borrowing from
+    public let borrowingUntil: Int?     // unix time that borrow window ends
+    public let lendingTo: [String]?     // display names this user is currently lending to
 
     public init(
         userId: String,
@@ -67,7 +71,10 @@ public struct BoardRow: Codable, Equatable, Sendable {
         resetAt: Int?,
         availableToLend: Bool?,
         lastSeen: Int,
-        postedAt: Int?
+        postedAt: Int?,
+        borrowingFrom: String? = nil,
+        borrowingUntil: Int? = nil,
+        lendingTo: [String]? = nil
     ) {
         self.userId = userId
         self.displayName = displayName
@@ -77,6 +84,9 @@ public struct BoardRow: Codable, Equatable, Sendable {
         self.availableToLend = availableToLend
         self.lastSeen = lastSeen
         self.postedAt = postedAt
+        self.borrowingFrom = borrowingFrom
+        self.borrowingUntil = borrowingUntil
+        self.lendingTo = lendingTo
     }
 }
 

@@ -282,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             selfUserId: teamController.userId,
             isTeamEnrolled: teamController.isEnrolled,
             onJoinTeam: { [weak self] in self?.promptJoinTeam() },
+            onSetTeamRelayURL: { [weak self] in self?.promptSetTeamRelayURL() },
             onNavigateToTeam: { [weak self] in
                 guard let self else { return }
                 self.popoverPage = .team
@@ -526,6 +527,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Prompts for the team relay base URL and writes it to the local config
+    /// file `RelayConfig.resolve()` reads at launch (see
+    /// `ClaudeUsageBarCore/RelayClient.swift`). This is how a teammate points
+    /// a fresh install at their team's self-hosted relay before "Join team…"
+    /// becomes available. Reached from the "Set team relay URL…" overflow-menu
+    /// item, which is always visible (unlike "Join team…").
+    ///
+    /// Intentionally does NOT touch `teamController`/`borrowController` — the
+    /// relay URL is only resolved at process launch, so a saved change only
+    /// takes effect after the user quits and reopens the app.
+    @objc private func promptSetTeamRelayURL() {
+        guard let relayFileURL = Self.relayConfigFileURL() else { return }
+        let currentValue = (try? String(contentsOf: relayFileURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let alert = NSAlert()
+        alert.messageText = "Team relay URL"
+        alert.informativeText = "Points Claudeometer at your team's self-hosted relay, which powers the team usage board and borrowing."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "https://relay.yourteam.example.com"
+        field.stringValue = currentValue
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: relayFileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try (trimmed + "\n").write(to: relayFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            showErrorAlert(title: "Couldn't save relay URL", message: error.localizedDescription)
+            return
+        }
+
+        let saved = NSAlert()
+        saved.messageText = "Saved — quit and reopen Claudeometer to enable team mode."
+        saved.addButton(withTitle: "OK")
+        saved.runModal()
+    }
+
+    /// `~/Library/Application Support/Claudeometer/relay-url` — the same path
+    /// `RelayConfig.resolve()` reads, kept in sync with that file's location.
+    private static func relayConfigFileURL() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Claudeometer/relay-url")
+    }
+
     /// Fires a local notification for each incoming borrow request not seen
     /// before, mirroring `evaluateNotifications`/`sendThresholdNotification`
     /// below. Dedup'd by `requestId` so a request doesn't re-notify on every
@@ -608,6 +662,7 @@ final class UsagePanelView: NSView {
     private let accountItems: [NSMenuItem]
     private let isTeamEnrolled: Bool
     private let onJoinTeam: () -> Void
+    private let onSetTeamRelayURL: () -> Void
     private let onNavigateToTeam: () -> Void
     private let onNavigateBack: () -> Void
     private let onRequestBorrow: (String) -> Void
@@ -631,6 +686,7 @@ final class UsagePanelView: NSView {
         selfUserId: String? = nil,
         isTeamEnrolled: Bool = false,
         onJoinTeam: @escaping () -> Void = {},
+        onSetTeamRelayURL: @escaping () -> Void = {},
         onNavigateToTeam: @escaping () -> Void = {},
         onNavigateBack: @escaping () -> Void = {},
         incomingRequests: [IncomingRequest] = [],
@@ -647,6 +703,7 @@ final class UsagePanelView: NSView {
         self.accountItems = accountItems
         self.isTeamEnrolled = isTeamEnrolled
         self.onJoinTeam = onJoinTeam
+        self.onSetTeamRelayURL = onSetTeamRelayURL
         self.onNavigateToTeam = onNavigateToTeam
         self.onNavigateBack = onNavigateBack
         self.onRequestBorrow = onRequestBorrow
@@ -1106,6 +1163,27 @@ final class UsagePanelView: NSView {
             caption.lineBreakMode = .byTruncatingTail
             nameStack.addArrangedSubview(caption)
         }
+
+        // Active-borrow visibility (relay v0.2.1+): surfaces that this member's
+        // usage is currently propped up by someone else's quota (borrowing) or
+        // that they're propping up teammates (lending), so a high `fiveHourPct`
+        // doesn't get mistaken for "heavy user of their own quota."
+        if let borrowingFrom = row.borrowingFrom {
+            let countdown = borrowCountdownText(until: row.borrowingUntil)
+            let tag = label("↔ borrowing from \(borrowingFrom) · \(countdown)",
+                             size: 10, weight: .regular, color: .secondaryLabelColor)
+            tag.maximumNumberOfLines = 1
+            tag.lineBreakMode = .byTruncatingTail
+            nameStack.addArrangedSubview(tag)
+        }
+
+        if let lendingTo = row.lendingTo, !lendingTo.isEmpty {
+            let tag = label("↑ lending to \(lendingTo.joined(separator: ", "))",
+                             size: 10, weight: .regular, color: .secondaryLabelColor)
+            tag.maximumNumberOfLines = 1
+            tag.lineBreakMode = .byTruncatingTail
+            nameStack.addArrangedSubview(tag)
+        }
         container.addArrangedSubview(nameStack)
 
         let spacer = NSView()
@@ -1353,6 +1431,7 @@ final class UsagePanelView: NSView {
     @objc private func loginTapped() { onLogin() }
     @objc private func quitTapped() { onQuit() }
     @objc private func joinTeamMenuItemTapped() { onJoinTeam() }
+    @objc private func setTeamRelayURLMenuItemTapped() { onSetTeamRelayURL() }
 
     @objc private func overflowTapped(_ sender: NSButton) {
         let menu = NSMenu()
@@ -1367,6 +1446,11 @@ final class UsagePanelView: NSView {
             joinTeamItem.target = self
             menu.addItem(joinTeamItem)
         }
+        // Always visible (unlike "Join team…" above): this is how a teammate
+        // points a fresh install at the relay before team mode is enabled.
+        let setRelayItem = NSMenuItem(title: "Set team relay URL…", action: #selector(setTeamRelayURLMenuItemTapped), keyEquivalent: "")
+        setRelayItem.target = self
+        menu.addItem(setRelayItem)
         menu.addItem(.separator())
         if !accountItems.isEmpty {
             for item in accountItems { menu.addItem(item) }
@@ -1621,13 +1705,23 @@ struct ClaudeUsageFetcher {
         )
     }
 
+    /// Which Keychain item to read for the user's OWN usage: the self account's
+    /// vault item while a borrow is active (so the meter + board show your own
+    /// numbers, not the lent account's), else the live Claude Code item.
+    private func usageKeychainService() -> String {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Claudeometer", isDirectory: true) else { return keychainService }
+        return AccountStore(directory: base).load().ownUsageKeychainService(claudeCodeService: keychainService)
+    }
+
     private func readCredentials() throws -> OAuthCredentials {
+        let service = usageKeychainService()
         let process = Process()
         let output = Pipe()
         let error = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", keychainService, "-w"]
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
         process.standardOutput = output
         process.standardError = error
 
@@ -2165,6 +2259,18 @@ private func resetText(_ date: Date) -> String {
         return "\(formatter.string(from: date)) (in \(hours)h \(minutes)m)"
     }
     return "\(formatter.string(from: date)) (in \(minutes)m)"
+}
+
+/// Formats the time remaining until `until` (unix time) as `H:MM`, for the
+/// "borrowing from … · <countdown>" tag on the team page. Returns `0:00` when
+/// `until` is nil or already in the past — a borrow window shown as expired
+/// rather than a negative/garbage duration.
+private func borrowCountdownText(until: Int?) -> String {
+    guard let until else { return "0:00" }
+    let remaining = max(0, until - Int(Date().timeIntervalSince1970))
+    let hours = remaining / 3_600
+    let minutes = (remaining % 3_600) / 60
+    return String(format: "%d:%02d", hours, minutes)
 }
 
 private func relative(_ date: Date) -> String {

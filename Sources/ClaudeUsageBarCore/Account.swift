@@ -39,6 +39,17 @@ public struct AccountsFile: Codable, Equatable, Sendable {
     public func account(id: UUID) -> Account? {
         accounts.first { $0.id == id }
     }
+
+    /// The Keychain service to read for the user's OWN usage. While a borrow is
+    /// active the Claude Code item holds the lent credential, so read the self
+    /// account's vault item instead — otherwise the personal meter and the team
+    /// board would show the lent account's usage, not the user's own.
+    public func ownUsageKeychainService(claudeCodeService: String) -> String {
+        if activeBorrow != nil, let me = selfAccount {
+            return me.keychainService
+        }
+        return claudeCodeService
+    }
 }
 
 /// Persists `AccountsFile` as `accounts.json` in the given directory. Secrets are
