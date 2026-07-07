@@ -47,3 +47,4 @@ relay-data/
 # Go relay build artifacts
 relay/claudeometer-relay
 relay/claudeometer-relay-*
+.gstack/

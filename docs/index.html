@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Claudeometer — your Claude usage, like a battery</title>
-<meta name="description" content="A native macOS menu-bar app that shows your Claude usage like a battery: live quota, burn rate, a 24h pace graph, and graduated alerts before you hit a limit." />
-<meta property="og:title" content="Claudeometer" />
-<meta property="og:description" content="Your Claude usage in the menu bar — live quota, burn rate, and alerts before you hit a limit." />
+<title>Claudeometer — Share Claude usage across your team</title>
+<meta name="description" content="Claudeometer lets a team share and pool Claude usage: see everyone's live limits and borrow a teammate's Claude when you're out of quota — end-to-end encrypted and self-hosted. Plus a menu-bar battery for your own usage." />
+<meta property="og:title" content="Claudeometer — Share Claude usage across your team" />
+<meta property="og:description" content="Pool your team's Claude limits: see everyone's live usage and borrow a teammate's Claude when you're out of quota — end-to-end encrypted, self-hosted. Plus a menu-bar battery for your own usage." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://sgsi.github.io/claudeometer/" />
 <meta property="og:image" content="https://sgsi.github.io/claudeometer/claudeometer-icon.png" />
@@ -292,7 +292,7 @@
   .feature p { font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; }
 
   /* ---------- screens gallery ---------- */
-  .screens-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; align-items: start; }
+  .screens-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 30px; align-items: start; }
   .screen-card h3 { font-size: 17px; font-weight: 700; margin-bottom: 7px; letter-spacing: -0.01em; }
   .screen-card > p { font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; margin-bottom: 20px; }
   .screen-stage { display: flex; justify-content: center; }
@@ -408,9 +408,9 @@
   <!-- HERO -->
   <header class="hero">
     <div class="hero-copy">
-      <span class="eyebrow"><span class="dot"></span> macOS menu bar · free &amp; open source</span>
-      <h1>Your Claude usage, <em>like a battery.</em></h1>
-      <p class="lede">Claudeometer lives in your menu bar and shows your Claude quota at a glance — the 5-hour window, burn rate, a live pace graph, and a heads-up <em>before</em> you slam into a limit.</p>
+      <span class="eyebrow"><span class="dot"></span> macOS menu bar · for teams · free &amp; open source</span>
+      <h1>Share Claude with your team, <em>like one battery.</em></h1>
+      <p class="lede">Claudeometer pools your team's Claude limits into one shared battery: see everyone's live usage and <b>borrow a teammate's Claude</b> the moment you're out of quota — end-to-end encrypted and self-hosted. And it's a menu-bar gauge for your own 5-hour window, too.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">
           ↓ Download for macOS <small>· .dmg</small>
@@ -525,22 +525,26 @@
   <!-- TEAM MODE -->
   <section id="team">
     <div class="sec-head">
-      <div class="sec-kicker">New · Team mode</div>
-      <h2>Out of quota? Borrow a teammate's.</h2>
-      <p>Turn on team mode to pool Claude usage across a small, trusted team — see everyone's live 5-hour usage, and request a window from anyone less tapped out than you right now. No fixed cutoff, just whoever has more room. Opt-in, self-hosted, no accounts.</p>
+      <div class="sec-kicker">Share Claude · Team mode</div>
+      <h2>Out of quota? Share your team's Claude.</h2>
+      <p>Turn on team mode to pool Claude usage across your teams — create or join as many as you like, see everyone's live 5-hour usage, and request a window from anyone in your team who's less tapped out than you right now. No fixed cutoff, just whoever has more room. Opt-in and self-hosted.</p>
     </div>
     <div class="grid">
       <div class="feature">
         <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9.5" r="2.5"/><path d="M3 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M14.5 20c.2-2.2 1.6-3.6 3.5-3.6 1.6 0 2.8 1 3 3"/></svg></div>
-        <h3>Live team board</h3><p>See every teammate's current usage and when their 5-hour window renews — so you always know who's using less than you before you ask.</p>
-      </div>
-      <div class="feature">
-        <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><circle cx="12" cy="15.5" r="1.4"/></svg></div>
-        <h3>Borrow, end-to-end encrypted</h3><p>Request a fixed window from anyone less used than you right now — they get a notification with <b>Approve</b> and <b>Reject</b> built right in. The credential is <b>sealed just to you</b> — the relay only ever carries opaque ciphertext — and it auto-reverts when the time's up, pinging you again along the way: approved, declined, about to end, returned.</p>
+        <h3>Live boards for every team</h3><p>Pick a team from your list — or an <b>All</b> view across them — and see each teammate's current usage and when their 5-hour window renews, so you always know who's using less than you before you ask.</p>
       </div>
       <div class="feature">
         <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="0.9"/><circle cx="7" cy="16.5" r="0.9"/></svg></div>
-        <h3>Self-hosted &amp; private</h3><p>Runs against a tiny relay you host yourself. Name-only — no passwords, no accounts — and it stays dormant until you point the app at your own relay.</p>
+        <h3>Create or join teams</h3><p>Spin up a team with a name and password, or join one you know the name and password for. Be part of several at once — say <b>KC-Tech</b> and <b>KC-Product</b> — and borrow within any of them. Public teams are discoverable and let people ask to join with owner approval; private teams stay invisible.</p>
+      </div>
+      <div class="feature">
+        <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><circle cx="12" cy="15.5" r="1.4"/></svg></div>
+        <h3>Borrow, end-to-end encrypted</h3><p>Request a fixed window from anyone in your team who's less used than you — they get a notification with <b>Approve</b> and <b>Reject</b> built in. The credential is <b>sealed just to you</b> — the relay only ever carries opaque ciphertext — and it auto-reverts when the time's up. You can only borrow from someone you share a team with, and a borrow you make in one team stays private from your others.</p>
+      </div>
+      <div class="feature">
+        <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6z"/><path d="M9.5 12l1.8 1.8 3.4-3.6"/></svg></div>
+        <h3>Self-hosted &amp; private</h3><p>Runs against a tiny relay you host yourself. Teams are gated by a password (hashed on the relay), and the relay only ever sees usage numbers and opaque ciphertext — never your Claude credentials. It stays dormant until you point the app at your own relay.</p>
       </div>
     </div>
   </section>
@@ -550,7 +554,7 @@
     <div class="sec-head">
       <div class="sec-kicker">See it in action</div>
       <h2>Every screen, at a glance.</h2>
-      <p>Mockups of the real popover — your personal gauge, the team board with live borrow status, and the one-tap approval prompt.</p>
+      <p>Mockups of the real popover — your personal gauge, the list of teams you share, a team board with live borrow status, and the one-tap approval prompt.</p>
     </div>
     <div class="screens-grid">
 
@@ -590,10 +594,10 @@
         </div>
       </div>
 
-      <!-- Team board -->
+      <!-- Your teams (list) -->
       <div class="screen-card">
-        <h3>Team board</h3>
-        <p>Everyone's headroom in one list — including who's borrowing from whom, live.</p>
+        <h3>Your teams</h3>
+        <p>Be in several teams at once. Your list shows each one — tap in to that team's board, or the <b>All</b> view across them. Create or join more from the ••• menu.</p>
         <div class="screen-stage" aria-hidden="true">
           <div class="popover">
             <div class="pop-head">
@@ -601,8 +605,53 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9.5" r="2.5"/><path d="M3 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M14.5 20c.2-2.2 1.6-3.6 3.5-3.6 1.6 0 2.8 1 3 3"/></svg>
               </div>
               <div>
-                <div class="pop-title">Team</div>
-                <div class="pop-sub">4 teammates · pooled quota</div>
+                <div class="pop-title">Teams</div>
+                <div class="pop-sub">3 teams · KC-Tech, KC-Product…</div>
+              </div>
+            </div>
+
+            <div class="sec-label">Your teams</div>
+            <div class="team-list">
+              <div class="team-row"><div class="team-top">
+                <div class="team-avatar">◎</div>
+                <div class="team-meta"><div class="team-name">All teams</div><div class="team-reset">everyone across your teams</div></div>
+                <span style="color:var(--ink-faint);font-weight:700;font-size:15px">›</span>
+              </div></div>
+              <div class="team-row"><div class="team-top">
+                <div class="team-avatar">K</div>
+                <div class="team-meta"><div class="team-name">KC-Tech ★</div><div class="team-reset">you own this</div></div>
+                <span style="color:var(--ink-faint);font-weight:700;font-size:15px">›</span>
+              </div></div>
+              <div class="team-row"><div class="team-top">
+                <div class="team-avatar">K</div>
+                <div class="team-meta"><div class="team-name">KC-Product ★</div><div class="team-reset">you own this</div></div>
+                <span style="color:var(--ink-faint);font-weight:700;font-size:15px">›</span>
+              </div></div>
+              <div class="team-row"><div class="team-top">
+                <div class="team-avatar">D</div>
+                <div class="team-meta"><div class="team-name">Design</div><div class="team-reset">member</div></div>
+                <span style="color:var(--ink-faint);font-weight:700;font-size:15px">›</span>
+              </div></div>
+            </div>
+
+            <div class="pop-foot"><span>Updated 6s ago</span><span class="icons">↻ &nbsp; •••</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Team board -->
+      <div class="screen-card">
+        <h3>Team board</h3>
+        <p>Inside a team: everyone's headroom in one list — including who's borrowing from whom, live.</p>
+        <div class="screen-stage" aria-hidden="true">
+          <div class="popover">
+            <div class="pop-head">
+              <div class="pop-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9.5" r="2.5"/><path d="M3 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M14.5 20c.2-2.2 1.6-3.6 3.5-3.6 1.6 0 2.8 1 3 3"/></svg>
+              </div>
+              <div>
+                <div class="pop-title">KC-Tech</div>
+                <div class="pop-sub">team board · 4 people</div>
               </div>
             </div>
 
@@ -736,6 +785,8 @@ brew install --cask claudeometer</span>
         <div style="margin-top:22px">
           <a class="btn btn-primary dl" href="https://github.com/SGSI/claudeometer/releases/latest/download/Claudeometer.dmg">↓ Download .dmg</a>
         </div>
+
+        <p class="or" style="margin-top:24px">Want <b>team mode</b>? It needs a relay URL. If you'd rather not host your own, <b>email <a href="mailto:sanketwable123@gmail.com" style="color:var(--terra-text);font-weight:700;text-decoration:none">sanketwable123@gmail.com</a></b> or reach out on LinkedIn, and I'll share my hosted relay URL to point the app at.</p>
       </div>
     </div>
   </section>
@@ -747,6 +798,7 @@ brew install --cask claudeometer</span>
       <div class="foot-links">
         <a href="https://github.com/SGSI/claudeometer">GitHub</a>
         <a href="https://github.com/SGSI/claudeometer/releases">Releases</a>
+        <a href="mailto:sanketwable123@gmail.com">Contact (relay URL)</a>
         <a href="https://github.com/SGSI/claudeometer/blob/main/LICENSE">MIT License</a>
       </div>
     </div>

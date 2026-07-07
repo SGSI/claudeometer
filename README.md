@@ -78,10 +78,12 @@ in `~/.claude/projects`.
 
 ## Team mode (optional)
 
-Claudeometer can also pool usage across a small team: see everyone's live usage on a
-board and **borrow** a teammate's Claude quota for a fixed window. A lent credential is
-**end-to-end encrypted** to the borrower — the relay only ever brokers opaque ciphertext
-and never sees a token.
+Claudeometer can also **share and pool Claude usage across your teams**: create or join
+teams (public or private, with a name and password), see everyone's live usage on a
+per-team board, and **borrow** a teammate's Claude quota for a fixed window when you're
+out. Borrowing is scoped to teams you share, and a lent credential is **end-to-end
+encrypted** to the borrower — the relay only ever brokers opaque ciphertext and never
+sees a token.
 
 Team mode talks to a small **self-hosted relay** (`relay/` — a Go + SQLite service; see
 `relay/PROTOCOL.md`). The relay URL is deliberately **not** baked into this repo. Point
@@ -91,6 +93,10 @@ the app at your own relay with either:
 - a one-line file at `~/Library/Application Support/Claudeometer/relay-url` containing the URL.
 
 With neither set, Claudeometer stays a personal usage meter — no team prompts, no network.
+
+**Don't want to host your own relay?** Reach out and I'll share mine — connect with me on
+LinkedIn or email **sanketwable123@gmail.com**, and I'll send you a hosted relay URL to
+point the app at.
 
 ## Build from source
 
