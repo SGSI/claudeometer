@@ -18,6 +18,7 @@ func TestBoardShowsActiveBorrow(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enrollWithEncryptionKey(t, s, "Alice", "dev-a", "alice-enc", aPub, aPriv)
 	bID := enrollWithEncryptionKey(t, s, "Bob", "dev-b", "bob-enc", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 2})
 	rec := call(t, s, "POST", "/borrow/request", reqBody, aID, aPriv)

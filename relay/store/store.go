@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -15,11 +16,16 @@ import (
 // ErrNotFound is returned by lookup methods when no matching row exists.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrNameTaken is returned when a display name (compared normalized) is already
+// bound to a different user.
+var ErrNameTaken = errors.New("store: name already taken")
+
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
   user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
   signing_pubkey TEXT NOT NULL, encryption_pubkey TEXT,
-  device_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL
+  device_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  name_norm TEXT
 );
 CREATE TABLE IF NOT EXISTS usage_posts (
   user_id TEXT PRIMARY KEY REFERENCES users(user_id),
@@ -40,6 +46,24 @@ CREATE TABLE IF NOT EXISTS mailbox (
   recipient_id TEXT NOT NULL,
   ciphertext TEXT NOT NULL,      -- opaque base64 E2E sealed blob; relay never reads it
   ttl_expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS teams (
+  name TEXT PRIMARY KEY, name_norm TEXT,
+  password_hash TEXT NOT NULL,
+  visibility TEXT NOT NULL,       -- private|public
+  created_by TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_norm ON teams(name_norm);
+CREATE TABLE IF NOT EXISTS memberships (
+  team_name TEXT NOT NULL, user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',   -- owner|member
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (team_name, user_id)
+);
+CREATE TABLE IF NOT EXISTS join_requests (
+  id TEXT PRIMARY KEY, team_name TEXT NOT NULL, user_id TEXT NOT NULL,
+  status TEXT NOT NULL,            -- pending|approved|rejected
+  created_at INTEGER NOT NULL, decided_by TEXT, decided_at INTEGER
 );
 `
 
@@ -146,7 +170,133 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: migrate schema: %w", err)
 	}
 
+	if err := migrateUserNames(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate user names: %w", err)
+	}
+
 	return &Store{db: db}, nil
+}
+
+// normalizeName is the canonical form used to enforce name uniqueness:
+// trimmed and lowercased, so "Sanket", "sanket" and "sanket " collide.
+func normalizeName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// migrateUserNames backfills the name_norm column, de-duplicates any existing
+// rows that share a normalized name (legacy data predating the constraint —
+// the earliest-created keeps its name; later ones get a "-N" suffix), and then
+// adds the unique index. Idempotent; safe to run on every Open.
+func migrateUserNames(db *sql.DB) error {
+	hasCol, err := columnExists(db, "users", "name_norm")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN name_norm TEXT`); err != nil {
+			return fmt.Errorf("add name_norm column: %w", err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE users SET name_norm = lower(trim(display_name)) WHERE name_norm IS NULL OR name_norm = ''`); err != nil {
+		return fmt.Errorf("backfill name_norm: %w", err)
+	}
+	if err := dedupeUserNames(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name_norm ON users(name_norm)`); err != nil {
+		return fmt.Errorf("unique name index: %w", err)
+	}
+	return nil
+}
+
+// dedupeUserNames renames rows that share a normalized name so the unique index
+// can be created without aborting.
+func dedupeUserNames(db *sql.DB) error {
+	rows, err := db.Query(`SELECT name_norm FROM users GROUP BY name_norm HAVING COUNT(*) > 1`)
+	if err != nil {
+		return fmt.Errorf("find duplicate names: %w", err)
+	}
+	var dups []string
+	for rows.Next() {
+		var nn string
+		if err := rows.Scan(&nn); err != nil {
+			rows.Close()
+			return err
+		}
+		dups = append(dups, nn)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, nn := range dups {
+		idRows, err := db.Query(`SELECT user_id, display_name FROM users WHERE name_norm = ? ORDER BY created_at, user_id`, nn)
+		if err != nil {
+			return fmt.Errorf("list duplicate rows: %w", err)
+		}
+		type urow struct{ id, name string }
+		var list []urow
+		for idRows.Next() {
+			var r urow
+			if err := idRows.Scan(&r.id, &r.name); err != nil {
+				idRows.Close()
+				return err
+			}
+			list = append(list, r)
+		}
+		idRows.Close()
+		if err := idRows.Err(); err != nil {
+			return err
+		}
+		// Keep list[0]; suffix the rest with the first free "-N".
+		for i := 1; i < len(list); i++ {
+			for n := i + 1; ; n++ {
+				candidate := fmt.Sprintf("%s-%d", list[i].name, n)
+				cand := normalizeName(candidate)
+				var exists int
+				if err := db.QueryRow(`SELECT COUNT(1) FROM users WHERE name_norm = ?`, cand).Scan(&exists); err != nil {
+					return fmt.Errorf("dedupe probe: %w", err)
+				}
+				if exists == 0 {
+					if _, err := db.Exec(`UPDATE users SET display_name = ?, name_norm = ? WHERE user_id = ?`, candidate, cand, list[i].id); err != nil {
+						return fmt.Errorf("dedupe update: %w", err)
+					}
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// columnExists reports whether table has a column named col.
+func columnExists(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("table_info %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE constraint failure
+// mentioning token (a column or index name).
+func isUniqueViolation(err error, token string) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") && strings.Contains(msg, token)
 }
 
 // Close releases the underlying database handle.
@@ -158,11 +308,14 @@ func (s *Store) Close() error {
 // generated UserID and set CreatedAt/LastSeen.
 func (s *Store) CreateUser(u *User) error {
 	_, err := s.db.Exec(
-		`INSERT INTO users (user_id, display_name, signing_pubkey, encryption_pubkey, device_id, created_at, last_seen)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		u.UserID, u.DisplayName, u.SigningPubKey, nullableString(u.EncryptionPubKey), u.DeviceID, u.CreatedAt, u.LastSeen,
+		`INSERT INTO users (user_id, display_name, signing_pubkey, encryption_pubkey, device_id, created_at, last_seen, name_norm)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.UserID, u.DisplayName, u.SigningPubKey, nullableString(u.EncryptionPubKey), u.DeviceID, u.CreatedAt, u.LastSeen, normalizeName(u.DisplayName),
 	)
 	if err != nil {
+		if isUniqueViolation(err, "name_norm") {
+			return ErrNameTaken
+		}
 		return fmt.Errorf("store: create user: %w", err)
 	}
 	return nil
@@ -255,7 +408,31 @@ func (s *Store) ListBoard() ([]BoardRow, error) {
 		return nil, fmt.Errorf("store: list board: %w", err)
 	}
 	defer rows.Close()
+	return scanBoardRows(rows)
+}
 
+// ListBoardForTeam is ListBoard restricted to the members of team.
+func (s *Store) ListBoardForTeam(team string) ([]BoardRow, error) {
+	rows, err := s.db.Query(
+		`SELECT u.user_id, u.display_name, u.last_seen,
+		        up.five_hour_pct, up.seven_day_pct, up.reset_at, up.available_to_lend, up.posted_at
+		 FROM users u
+		 JOIN memberships mem ON mem.user_id = u.user_id
+		 LEFT JOIN usage_posts up ON u.user_id = up.user_id
+		 WHERE mem.team_name = ?
+		 ORDER BY u.created_at ASC`,
+		team,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list board for team: %w", err)
+	}
+	defer rows.Close()
+	return scanBoardRows(rows)
+}
+
+// scanBoardRows maps a board query result set to BoardRows (shared by the
+// global and team-scoped board queries, which select the same columns).
+func scanBoardRows(rows *sql.Rows) ([]BoardRow, error) {
 	var board []BoardRow
 	for rows.Next() {
 		var (
@@ -268,7 +445,7 @@ func (s *Store) ListBoard() ([]BoardRow, error) {
 		)
 		if err := rows.Scan(&row.UserID, &row.DisplayName, &row.LastSeen,
 			&fiveHourPct, &sevenDayPct, &resetAt, &availableToLend, &postedAt); err != nil {
-			return nil, fmt.Errorf("store: list board: scan: %w", err)
+			return nil, fmt.Errorf("store: scan board row: %w", err)
 		}
 		if fiveHourPct.Valid {
 			row.FiveHourPct = &fiveHourPct.Float64
@@ -288,7 +465,7 @@ func (s *Store) ListBoard() ([]BoardRow, error) {
 		board = append(board, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list board: %w", err)
+		return nil, fmt.Errorf("store: scan board rows: %w", err)
 	}
 	return board, nil
 }
@@ -306,6 +483,22 @@ func (s *Store) CreateBorrowRequest(id, requesterID, lenderID string, hours int,
 		return fmt.Errorf("store: create borrow request: %w", err)
 	}
 	return nil
+}
+
+// HasPendingRequest reports whether requesterID already has an undecided
+// (pending) borrow request to lenderID. Used to enforce one outstanding request
+// per lender until it is approved or rejected.
+func (s *Store) HasPendingRequest(requesterID, lenderID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(1) FROM borrow_requests
+		 WHERE requester_id = ? AND lender_id = ? AND status = 'pending'`,
+		requesterID, lenderID,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("store: has pending request: %w", err)
+	}
+	return n > 0, nil
 }
 
 // GetBorrowRequest looks up a borrow request by id. Returns ErrNotFound if

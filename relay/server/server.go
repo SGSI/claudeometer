@@ -47,6 +47,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /borrow/decision", s.withAuth(s.handleBorrowDecision))
 	mux.HandleFunc("GET /borrow/pickup/{requestId}", s.withAuth(s.handleBorrowPickup))
 	mux.HandleFunc("POST /borrow/revoke", s.withAuth(s.handleBorrowRevoke))
+	mux.HandleFunc("POST /teams", s.withAuth(s.handleCreateTeam))
+	mux.HandleFunc("GET /teams", s.withAuth(s.handleListTeams))
+	mux.HandleFunc("GET /my-teams", s.withAuth(s.handleMyTeams))
+	mux.HandleFunc("POST /teams/{name}/join", s.withAuth(s.handleJoinTeam))
+	mux.HandleFunc("POST /teams/{name}/leave", s.withAuth(s.handleLeaveTeam))
+	mux.HandleFunc("GET /teams/{name}/requests", s.withAuth(s.handleListJoinRequests))
+	mux.HandleFunc("POST /teams/{name}/requests/{id}", s.withAuth(s.handleDecideJoinRequest))
 	return mux
 }
 
@@ -152,34 +159,89 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request, u *store.Us
 
 // --- board (authed) ---
 
-func (s *Server) handleBoard(w http.ResponseWriter, _ *http.Request, _ *store.User) {
-	board, err := s.store.ListBoard()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "board failed")
-		return
+// handleBoard serves either a specific team's board (?team=X, caller must be a
+// member) or, with no team, the union of the caller's teams. Borrow
+// counterparties outside the viewing roster are redacted (see annotateBoard).
+func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, u *store.User) {
+	team := r.URL.Query().Get("team")
+	var board []store.BoardRow
+	var roster map[string]bool
+
+	if team != "" {
+		t, _, err := s.store.GetTeam(team)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "unknown team")
+			return
+		}
+		if ok, _ := s.store.IsMember(t.Name, u.UserID); !ok {
+			writeErr(w, http.StatusForbidden, "not a member of this team")
+			return
+		}
+		if board, err = s.store.ListBoardForTeam(t.Name); err != nil {
+			writeErr(w, http.StatusInternalServerError, "board failed")
+			return
+		}
+		if roster, err = s.store.TeamMemberIDs(t.Name); err != nil {
+			writeErr(w, http.StatusInternalServerError, "board failed")
+			return
+		}
+	} else {
+		var err error
+		if roster, err = s.store.VisibleUserIDs(u.UserID); err != nil {
+			writeErr(w, http.StatusInternalServerError, "board failed")
+			return
+		}
+		all, err := s.store.ListBoard()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "board failed")
+			return
+		}
+		for _, row := range all {
+			if roster[row.UserID] {
+				board = append(board, row)
+			}
+		}
 	}
 	if board == nil {
 		board = []store.BoardRow{}
 	}
-	// Annotate rows with who is currently borrowing from whom, so the board
-	// reflects that a borrower is on someone else's quota (not their own).
-	if actives, aerr := s.store.ListActiveBorrows(s.now().Unix()); aerr == nil {
-		byID := make(map[string]*store.BoardRow, len(board))
-		for i := range board {
-			byID[board[i].UserID] = &board[i]
-		}
-		for _, a := range actives {
-			if r := byID[a.RequesterID]; r != nil {
+	s.annotateBoard(board, roster)
+	writeJSON(w, http.StatusOK, board)
+}
+
+// annotateBoard marks who is borrowing from / lending to whom, revealing a
+// counterparty only when they are in the viewing roster; anyone outside it is
+// shown as "another team" with no id, keys, or borrow-until that could
+// fingerprint them.
+func (s *Server) annotateBoard(board []store.BoardRow, roster map[string]bool) {
+	const elsewhere = "another team"
+	actives, err := s.store.ListActiveBorrows(s.now().Unix())
+	if err != nil {
+		return
+	}
+	byID := make(map[string]*store.BoardRow, len(board))
+	for i := range board {
+		byID[board[i].UserID] = &board[i]
+	}
+	for _, a := range actives {
+		if row := byID[a.RequesterID]; row != nil {
+			if roster[a.LenderID] {
 				name, ends := a.LenderName, a.EndsAt
-				r.BorrowingFrom = &name
-				r.BorrowingUntil = &ends
+				row.BorrowingFrom = &name
+				row.BorrowingUntil = &ends
+			} else {
+				name := elsewhere
+				row.BorrowingFrom = &name // deliberately no BorrowingUntil
 			}
-			if r := byID[a.LenderID]; r != nil {
-				r.LendingTo = append(r.LendingTo, a.RequesterName)
+		}
+		if row := byID[a.LenderID]; row != nil {
+			if roster[a.RequesterID] {
+				row.LendingTo = append(row.LendingTo, a.RequesterName)
+			} else {
+				row.LendingTo = append(row.LendingTo, elsewhere)
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, board)
 }
 
 // --- borrow handshake (authed) ---
@@ -210,6 +272,44 @@ func (s *Server) handleBorrowRequest(w http.ResponseWriter, r *http.Request, u *
 		} else {
 			writeErr(w, http.StatusInternalServerError, "lookup failed")
 		}
+		return
+	}
+
+	// Borrowing is scoped to shared team membership.
+	if shared, err := s.store.SharesTeam(u.UserID, req.LenderID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "team check failed")
+		return
+	} else if !shared {
+		writeErr(w, http.StatusForbidden, "no shared team with this lender")
+		return
+	}
+
+	// Single-active-borrow lock: one real credential per lender, one active
+	// borrow per borrower, spanning all teams.
+	now := s.now().Unix()
+	if busy, err := s.store.IsBorrowing(u.UserID, now); err != nil {
+		writeErr(w, http.StatusInternalServerError, "borrow-lock check failed")
+		return
+	} else if busy {
+		writeErr(w, http.StatusConflict, "you already have an active borrow")
+		return
+	}
+	if busy, err := s.store.IsLending(req.LenderID, now); err != nil {
+		writeErr(w, http.StatusInternalServerError, "lend-lock check failed")
+		return
+	} else if busy {
+		writeErr(w, http.StatusConflict, "lender is currently lending")
+		return
+	}
+
+	// One outstanding request per lender: block a second request while a prior
+	// one is still pending. Once the lender approves or rejects it, the requester
+	// can ask again.
+	if pending, err := s.store.HasPendingRequest(u.UserID, req.LenderID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "pending lookup failed")
+		return
+	} else if pending {
+		writeErr(w, http.StatusConflict, "you already have a pending request to this lender")
 		return
 	}
 
@@ -275,10 +375,28 @@ func (s *Server) handleBorrowDecision(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 
+	// Re-verify the shared team at decision time — membership may have changed
+	// since the request was made.
+	if shared, err := s.store.SharesTeam(br.RequesterID, br.LenderID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "team check failed")
+		return
+	} else if !shared {
+		writeErr(w, http.StatusForbidden, "no shared team with the requester")
+		return
+	}
+
 	now := s.now().Unix()
 	if req.Approve {
 		if req.Ciphertext == "" {
 			writeErr(w, http.StatusBadRequest, "ciphertext required to approve")
+			return
+		}
+		// The lender's one credential can't be lent twice at once.
+		if busy, err := s.store.IsLending(br.LenderID, now); err != nil {
+			writeErr(w, http.StatusInternalServerError, "lend-lock check failed")
+			return
+		} else if busy {
+			writeErr(w, http.StatusConflict, "already lending to someone else")
 			return
 		}
 		if err := s.store.ApproveBorrow(br.ID, br.RequesterID, req.Ciphertext, now, now+600); err != nil {
@@ -311,6 +429,16 @@ func (s *Server) handleBorrowPickup(w http.ResponseWriter, r *http.Request, u *s
 	}
 	if br.Status != "approved" {
 		writeErr(w, http.StatusConflict, "request is not approved")
+		return
+	}
+
+	// Re-verify the shared team at pickup — the last gate before the credential
+	// handoff completes.
+	if shared, err := s.store.SharesTeam(br.RequesterID, br.LenderID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "team check failed")
+		return
+	} else if !shared {
+		writeErr(w, http.StatusForbidden, "no shared team with the lender")
 		return
 	}
 

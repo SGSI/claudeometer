@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -21,6 +22,67 @@ func newTestStore(t *testing.T) *Store {
 		}
 	})
 	return s
+}
+
+func TestCreateUser_DuplicateNameRejected(t *testing.T) {
+	s := newTestStore(t)
+	must := func(err error) {
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+	must(s.CreateUser(&User{UserID: "u1", DisplayName: "Sanket", SigningPubKey: "k1", DeviceID: "d1", CreatedAt: 1, LastSeen: 1}))
+
+	// Same name, different case/whitespace, different key → rejected.
+	err := s.CreateUser(&User{UserID: "u2", DisplayName: "  sanket ", SigningPubKey: "k2", DeviceID: "d2", CreatedAt: 1, LastSeen: 1})
+	if !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("CreateUser() dup name err = %v, want ErrNameTaken", err)
+	}
+}
+
+// A legacy DB predating the unique constraint may hold duplicate names. Opening
+// the store must dedupe them (earliest-created keeps the name) and then enforce
+// uniqueness — without aborting.
+func TestDedupeDuplicateNamesOnOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "relay.db")
+
+	// Pre-seed a legacy users table (no name_norm, no unique index) with dupes.
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE users (
+		user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+		signing_pubkey TEXT NOT NULL, encryption_pubkey TEXT,
+		device_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);`); err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
+	raw.Exec(`INSERT INTO users VALUES ('u1','Sanket','k1',NULL,'d1',10,10)`)
+	raw.Exec(`INSERT INTO users VALUES ('u2','sanket','k2',NULL,'d2',20,20)`)
+	raw.Close()
+
+	// Opening via the store migrates: dedupe + add the unique constraint.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after legacy dupes: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	u1, _ := s.GetUserByID("u1")
+	u2, _ := s.GetUserByID("u2")
+	if u1.DisplayName != "Sanket" {
+		t.Fatalf("earliest u1 name = %q, want Sanket", u1.DisplayName)
+	}
+	if normalizeName(u2.DisplayName) == "sanket" {
+		t.Fatalf("later u2 name = %q, want a de-duped suffix", u2.DisplayName)
+	}
+
+	// Uniqueness is now enforced going forward.
+	err = s.CreateUser(&User{UserID: "u3", DisplayName: "Sanket", SigningPubKey: "k3", DeviceID: "d3", CreatedAt: 30, LastSeen: 30})
+	if !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("post-migration dup create = %v, want ErrNameTaken", err)
+	}
 }
 
 func TestCreateAndGetUser(t *testing.T) {
@@ -349,6 +411,31 @@ func TestGetBorrowRequest_NotFound(t *testing.T) {
 	_, err := s.GetBorrowRequest("does-not-exist")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetBorrowRequest() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestHasPendingRequest(t *testing.T) {
+	s := newTestStore(t)
+	requesterID, lenderID := seedBorrowUsers(t, s)
+
+	// No request yet.
+	if pending, err := s.HasPendingRequest(requesterID, lenderID); err != nil || pending {
+		t.Fatalf("HasPendingRequest() before any = (%v, %v), want (false, nil)", pending, err)
+	}
+
+	if err := s.CreateBorrowRequest("req-1", requesterID, lenderID, 2, 1000); err != nil {
+		t.Fatalf("CreateBorrowRequest() error = %v", err)
+	}
+	if pending, err := s.HasPendingRequest(requesterID, lenderID); err != nil || !pending {
+		t.Fatalf("HasPendingRequest() while pending = (%v, %v), want (true, nil)", pending, err)
+	}
+
+	// Once decided (rejected), it is no longer pending.
+	if err := s.RejectBorrow("req-1", 2000); err != nil {
+		t.Fatalf("RejectBorrow() error = %v", err)
+	}
+	if pending, err := s.HasPendingRequest(requesterID, lenderID); err != nil || pending {
+		t.Fatalf("HasPendingRequest() after reject = (%v, %v), want (false, nil)", pending, err)
 	}
 }
 

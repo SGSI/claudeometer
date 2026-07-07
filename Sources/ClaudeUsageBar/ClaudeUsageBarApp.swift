@@ -46,16 +46,43 @@ private extension NSColor {
 /// navigation state for the popover; it lives on `AppDelegate` (the owner of
 /// `popover`/`renderPopover`) and `UsagePanelView` just renders whichever page
 /// it's told to, rebuilding from scratch on every render like the rest of the panel.
-enum PopoverPage {
+/// One screen in the popover navigation stack. `.board(team:)` with a nil team
+/// is the "All teams" union board.
+enum PopoverScreen: Equatable {
     case main
-    case team
+    case teamsList
+    case board(team: String?)
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
-    private var popoverPage: PopoverPage = .main
+    /// Popover navigation stack (bottom = .main). Back pops; the header shows a
+    /// "‹ Back" only when `count > 1`, so it can never be lost to a data refresh.
+    private var navStack: [PopoverScreen] = [.main]
+    private var currentScreen: PopoverScreen { navStack.last ?? .main }
+    /// Coalesces render requests to one per runloop tick, so a tap and the async
+    /// board/requests refreshes it triggers collapse into a single rebuild.
+    private var renderScheduled = false
+    /// Cached pending join-requests for the selected team (owner view only).
+    private var teamJoinRequests: [JoinRequestSummary] = []
+
+    /// Persistent popover container: the panel content is swapped inside this
+    /// single effect view on each render, instead of replacing the whole
+    /// `contentViewController` (which flickers when renders land in quick
+    /// succession — e.g. switching teams).
+    private let popoverEffect: NSVisualEffectView = {
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.appearance = NSAppearance(named: .aqua)
+        effect.translatesAutoresizingMaskIntoConstraints = false
+        return effect
+    }()
+    /// Last applied popover height, so we only resize when it actually changes.
+    private var lastPopoverHeight: CGFloat = 0
     private let fetcher = ClaudeUsageFetcher()
     private var snapshot: UsageSnapshot?
     private var hotSessions: [LocalSessionSummary] = []
@@ -287,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             closePopover()
             return
         }
-        popoverPage = .main
+        navStack = [.main]
         renderPopover(status: statusMessage)
         if let button = statusItem.button {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -331,6 +358,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Schedules a single render on the next runloop tick, coalescing the many
+    /// render requests a team switch fires (the tap plus async board/requests
+    /// refreshes) into one rebuild — eliminating the flicker/Back-button races.
+    private func setNeedsRender() {
+        guard !renderScheduled else { return }
+        renderScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.renderScheduled = false
+            self.renderPopover(status: self.statusMessage)
+        }
+    }
+
+    private func navPush(_ screen: PopoverScreen) {
+        navStack.append(screen)
+        setNeedsRender()
+    }
+
+    private func navPop() {
+        if navStack.count > 1 { navStack.removeLast() }
+        setNeedsRender()
+    }
+
+    private func navReplaceTop(_ screen: PopoverScreen) {
+        if navStack.isEmpty { navStack = [screen] } else { navStack[navStack.count - 1] = screen }
+        setNeedsRender()
+    }
+
+    /// Opens a team's board (nil = All teams): selects it, fetches its board +
+    /// owner join-requests, and navigates. From the board (a ▾ switch) it swaps
+    /// the current screen; from the list it pushes.
+    private func openBoard(team: String?) {
+        teamController.selectTeam(team)
+        refreshTeamJoinRequests()
+        if case .board = currentScreen {
+            navReplaceTop(.board(team: team))
+        } else {
+            navPush(.board(team: team))
+        }
+    }
+
     private func renderPopover(status: String?) {
         let fiveHourUtil = snapshot?.usage.fiveHour?.utilization ?? 0
         let accent = color(for: fiveHourUtil)
@@ -343,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             accent: accent,
             history: history,
             activeBorrowStatus: multiAccount.activeBorrowStatus,
-            page: popoverPage,
+            screen: currentScreen,
             onRefresh: { [weak self] in self?.refresh() },
             onOpenSettings: { NSWorkspace.shared.open(settingsURL) },
             onLogin: { Self.openClaudeLogin() },
@@ -356,14 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onSetTeamRelayURL: { [weak self] in self?.promptSetTeamRelayURL() },
             onNavigateToTeam: { [weak self] in
                 guard let self else { return }
-                self.popoverPage = .team
-                self.renderPopover(status: self.statusMessage)
+                self.navPush(.teamsList)
+                Task { await self.teamController.refreshMyTeams() }
             },
-            onNavigateBack: { [weak self] in
-                guard let self else { return }
-                self.popoverPage = .main
-                self.renderPopover(status: self.statusMessage)
-            },
+            onNavigateBack: { [weak self] in self?.navPop() },
             incomingRequests: borrowController.incoming,
             outgoingRequests: borrowController.outgoing,
             onRequestBorrow: { [weak self] lenderId in
@@ -391,32 +455,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 Task { @MainActor in
                     await self?.borrowController.revoke(requestId: requestId)
                 }
-            }
+            },
+            myTeams: teamController.myTeams,
+            selectedTeam: teamController.selectedTeam,
+            pendingJoinRequests: teamJoinRequests,
+            onOpenBoard: { [weak self] name in self?.openBoard(team: name) },
+            onCreateTeam: { [weak self] in self?.promptCreateTeam() },
+            onJoinNamedTeam: { [weak self] in self?.promptJoinNamedTeam() },
+            onLeaveTeam: { [weak self] team in self?.confirmLeaveTeam(team) },
+            onApproveJoin: { [weak self] id in self?.decideJoin(id: id, approve: true) },
+            onRejectJoin: { [weak self] id in self?.decideJoin(id: id, approve: false) }
         )
         panel.translatesAutoresizingMaskIntoConstraints = false
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.appearance = NSAppearance(named: .aqua)
-        effect.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(panel)
+        // Swap only the inner panel inside the persistent effect view. The panel's
+        // own edge constraints go away with it (they're anchored to the child), so
+        // they don't accumulate; the effect's width constraint is added once.
+        popoverEffect.subviews.forEach { $0.removeFromSuperview() }
+        popoverEffect.addSubview(panel)
         NSLayoutConstraint.activate([
-            panel.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            panel.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            panel.topAnchor.constraint(equalTo: effect.topAnchor),
-            panel.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-            effect.widthAnchor.constraint(equalToConstant: 340)
+            panel.leadingAnchor.constraint(equalTo: popoverEffect.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: popoverEffect.trailingAnchor),
+            panel.topAnchor.constraint(equalTo: popoverEffect.topAnchor),
+            panel.bottomAnchor.constraint(equalTo: popoverEffect.bottomAnchor)
         ])
-        effect.layoutSubtreeIfNeeded()
 
-        let controller = NSViewController()
-        controller.view = effect
-        popover.contentViewController = controller
+        if popover.contentViewController == nil {
+            popoverEffect.widthAnchor.constraint(equalToConstant: 340).isActive = true
+            let controller = NSViewController()
+            controller.view = popoverEffect
+            popover.contentViewController = controller
+        }
+        popoverEffect.layoutSubtreeIfNeeded()
 
-        let fittingHeight = min(max(effect.fittingSize.height, 1), 760)
-        popover.contentSize = NSSize(width: 340, height: fittingHeight)
+        // Only resize the popover when the height genuinely changes — an unchanged
+        // contentSize assignment still nudges the window and adds to the flicker.
+        let fittingHeight = min(max(popoverEffect.fittingSize.height, 1), 760)
+        if abs(fittingHeight - lastPopoverHeight) > 0.5 {
+            popover.contentSize = NSSize(width: 340, height: fittingHeight)
+            lastPopoverHeight = fittingHeight
+        }
     }
 
     private func startBlinking(title: String) {
@@ -586,14 +664,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 guard let self else { return }
                 self.notifyReturnedBorrows(board: self.teamController.board, selfUserId: self.teamController.userId)
-                self.renderPopover(status: self.statusMessage)
+                self.setNeedsRender()
             }
         }
         borrowController.onChange = { [weak self] in
             Task { @MainActor in
                 self?.notifyNewIncomingBorrowRequests()
                 self?.notifyOutgoingBorrowUpdates()
-                self?.renderPopover(status: self?.statusMessage)
+                self?.setNeedsRender()
             }
         }
         teamController.start()
@@ -666,6 +744,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.borrowController.start()
             }
         }
+    }
+
+    /// Refreshes the pending join-requests for the selected team, but only when
+    /// the caller owns it (members can't see them). Clears the cache otherwise.
+    private func refreshTeamJoinRequests() {
+        guard let team = teamController.selectedTeam, teamController.isOwner(of: team) else {
+            teamJoinRequests = []
+            setNeedsRender()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            self.teamJoinRequests = await self.teamController.listJoinRequests(team: team)
+            self.setNeedsRender()
+        }
+    }
+
+    /// Approves/rejects a pending join request on the selected team.
+    private func decideJoin(id: String, approve: Bool) {
+        guard let team = teamController.selectedTeam else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if let err = await self.teamController.decideJoinRequest(team: team, id: id, approve: approve) {
+                self.showErrorAlert(title: "Couldn't update request", message: err)
+            }
+            self.refreshTeamJoinRequests()
+        }
+    }
+
+    private func confirmLeaveTeam(_ team: String) {
+        let alert = NSAlert()
+        alert.messageText = "Leave \(team)?"
+        alert.informativeText = "You'll stop sharing usage with this team and can't borrow from its members until you rejoin."
+        alert.addButton(withTitle: "Leave")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if let err = await self.teamController.leaveTeam(name: team) {
+                self.showErrorAlert(title: "Couldn't leave team", message: err)
+            }
+            self.refreshTeamJoinRequests()
+        }
+    }
+
+    /// Prompts for a team name + password (+ visibility) and creates the team.
+    private func promptCreateTeam() {
+        guard RelayConfig.isConfigured, teamController.isEnrolled else { return }
+        let alert = NSAlert()
+        alert.messageText = "Create a team"
+        alert.informativeText = "Pick a unique team name and a password teammates will use to join."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 82))
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 56, width: 260, height: 24))
+        nameField.placeholderString = "Team name"
+        let passField = NSSecureTextField(frame: NSRect(x: 0, y: 28, width: 260, height: 24))
+        passField.placeholderString = "Team password"
+        let publicCheck = NSButton(checkboxWithTitle: "Public (discoverable by anyone)", target: nil, action: nil)
+        publicCheck.frame = NSRect(x: 0, y: 2, width: 260, height: 20)
+        accessory.addSubview(nameField)
+        accessory.addSubview(passField)
+        accessory.addSubview(publicCheck)
+        alert.accessoryView = accessory
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        let password = passField.stringValue
+        guard !name.isEmpty, !password.isEmpty else { return }
+        let visibility = publicCheck.state == .on ? "public" : "private"
+        Task { [weak self] in
+            guard let self else { return }
+            if let err = await self.teamController.createTeam(name: name, password: password, visibility: visibility) {
+                self.showErrorAlert(title: "Couldn't create team", message: err)
+            }
+            self.refreshTeamJoinRequests()
+        }
+    }
+
+    /// Prompts for a team name + password and joins (or requests to join).
+    private func promptJoinNamedTeam() {
+        guard RelayConfig.isConfigured, teamController.isEnrolled else { return }
+        let alert = NSAlert()
+        alert.messageText = "Join a team"
+        alert.informativeText = "Enter the team name and password. For a public team, leave the password blank to request to join."
+        alert.addButton(withTitle: "Join")
+        alert.addButton(withTitle: "Cancel")
+
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 54))
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 28, width: 260, height: 24))
+        nameField.placeholderString = "Team name"
+        let passField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        passField.placeholderString = "Team password (optional for public)"
+        accessory.addSubview(nameField)
+        accessory.addSubview(passField)
+        alert.accessoryView = accessory
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let password = passField.stringValue.isEmpty ? nil : passField.stringValue
+        Task { [weak self] in
+            guard let self else { return }
+            let (err, pending) = await self.teamController.joinTeam(name: name, password: password)
+            if let err {
+                self.showErrorAlert(title: "Couldn't join team", message: err)
+            } else if pending {
+                self.showInfoAlert(title: "Request sent", message: "Your request to join \(name) is pending the owner's approval.")
+            }
+            self.refreshTeamJoinRequests()
+        }
+    }
+
+    private func showInfoAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Prompts for the team relay base URL and writes it to the local config
@@ -905,6 +1103,12 @@ final class UsagePanelView: NSView {
     private let onApproveBorrow: (IncomingRequest) -> Void
     private let onRejectBorrow: (IncomingRequest) -> Void
     private let onCancelOutgoingBorrow: (String) -> Void
+    private let onOpenBoard: (String?) -> Void
+    private let onCreateTeam: () -> Void
+    private let onJoinNamedTeam: () -> Void
+    private let onLeaveTeam: (String) -> Void
+    private let onApproveJoin: (String) -> Void
+    private let onRejectJoin: (String) -> Void
 
     init(
         snapshot: UsageSnapshot?,
@@ -913,7 +1117,7 @@ final class UsagePanelView: NSView {
         accent: NSColor,
         history: [UsageHistoryPoint],
         activeBorrowStatus: (label: String, remaining: TimeInterval)? = nil,
-        page: PopoverPage = .main,
+        screen: PopoverScreen = .main,
         onRefresh: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
         onLogin: @escaping () -> Void,
@@ -931,7 +1135,16 @@ final class UsagePanelView: NSView {
         onRequestBorrow: @escaping (String) -> Void = { _ in },
         onApproveBorrow: @escaping (IncomingRequest) -> Void = { _ in },
         onRejectBorrow: @escaping (IncomingRequest) -> Void = { _ in },
-        onCancelOutgoingBorrow: @escaping (String) -> Void = { _ in }
+        onCancelOutgoingBorrow: @escaping (String) -> Void = { _ in },
+        myTeams: [TeamMembership] = [],
+        selectedTeam: String? = nil,
+        pendingJoinRequests: [JoinRequestSummary] = [],
+        onOpenBoard: @escaping (String?) -> Void = { _ in },
+        onCreateTeam: @escaping () -> Void = {},
+        onJoinNamedTeam: @escaping () -> Void = {},
+        onLeaveTeam: @escaping (String) -> Void = { _ in },
+        onApproveJoin: @escaping (String) -> Void = { _ in },
+        onRejectJoin: @escaping (String) -> Void = { _ in }
     ) {
         self.onRefresh = onRefresh
         self.onOpenSettings = onOpenSettings
@@ -947,10 +1160,17 @@ final class UsagePanelView: NSView {
         self.onApproveBorrow = onApproveBorrow
         self.onRejectBorrow = onRejectBorrow
         self.onCancelOutgoingBorrow = onCancelOutgoingBorrow
+        self.onOpenBoard = onOpenBoard
+        self.onCreateTeam = onCreateTeam
+        self.onJoinNamedTeam = onJoinNamedTeam
+        self.onLeaveTeam = onLeaveTeam
+        self.onApproveJoin = onApproveJoin
+        self.onRejectJoin = onRejectJoin
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 480))
         build(snapshot: snapshot, hotSessions: hotSessions, status: status, accent: accent, history: history,
-              activeBorrowStatus: activeBorrowStatus, page: page, teamBoard: teamBoard, selfUserId: selfUserId,
-              incomingRequests: incomingRequests, outgoingRequests: outgoingRequests)
+              activeBorrowStatus: activeBorrowStatus, screen: screen, teamBoard: teamBoard, selfUserId: selfUserId,
+              incomingRequests: incomingRequests, outgoingRequests: outgoingRequests,
+              myTeams: myTeams, selectedTeam: selectedTeam, pendingJoinRequests: pendingJoinRequests)
     }
 
     required init?(coder: NSCoder) {
@@ -964,11 +1184,14 @@ final class UsagePanelView: NSView {
         accent: NSColor,
         history: [UsageHistoryPoint],
         activeBorrowStatus: (label: String, remaining: TimeInterval)?,
-        page: PopoverPage,
+        screen: PopoverScreen,
         teamBoard: [BoardRow],
         selfUserId: String?,
         incomingRequests: [IncomingRequest],
-        outgoingRequests: [OutgoingRequest]
+        outgoingRequests: [OutgoingRequest],
+        myTeams: [TeamMembership] = [],
+        selectedTeam: String? = nil,
+        pendingJoinRequests: [JoinRequestSummary] = []
     ) {
         // Opaque cream card background (mockup `--card: #fbf6ec`), painted over the
         // popover's system vibrancy so the fixed brand palette always reads correctly.
@@ -989,7 +1212,7 @@ final class UsagePanelView: NSView {
             root.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18)
         ])
 
-        switch page {
+        switch screen {
         case .main:
             buildMainPage(
                 root: root, snapshot: snapshot, hotSessions: hotSessions, status: status,
@@ -997,10 +1220,13 @@ final class UsagePanelView: NSView {
                 teamBoard: teamBoard, selfUserId: selfUserId,
                 incomingRequests: incomingRequests
             )
-        case .team:
-            buildTeamPage(
-                root: root, teamBoard: teamBoard, selfUserId: selfUserId,
-                incomingRequests: incomingRequests, outgoingRequests: outgoingRequests
+        case .teamsList:
+            buildTeamsListPage(root: root, myTeams: myTeams)
+        case .board(let team):
+            buildBoardPage(
+                root: root, team: team, teamBoard: teamBoard, selfUserId: selfUserId,
+                incomingRequests: incomingRequests, outgoingRequests: outgoingRequests,
+                myTeams: myTeams, pendingJoinRequests: pendingJoinRequests
             )
         }
 
@@ -1059,38 +1285,190 @@ final class UsagePanelView: NSView {
         }
     }
 
-    /// Team page: reached via the "Team ›" nav row. Holds every M2/M3 team +
-    /// borrow affordance — the board, incoming requests (Approve/Reject), and
-    /// this device's own pending/approved outgoing request (Cancel).
-    private func buildTeamPage(
+    /// L1 — the Teams list: "All teams" (union board) plus each of the caller's
+    /// teams as full-width rows that drill into that team's board. Create/Join
+    /// live in the ⋯ menu (and as buttons in the 0-teams empty state).
+    private func buildTeamsListPage(root: NSStackView, myTeams: [TeamMembership]) {
+        addFullWidth(navHeader(title: "Teams"), to: root)
+        addFullWidth(divider(), to: root)
+
+        if myTeams.isEmpty {
+            addFullWidth(emptyTeamsView(), to: root)
+            return
+        }
+
+        let list = NSStackView()
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 6
+        list.translatesAutoresizingMaskIntoConstraints = false
+        list.addArrangedSubview(sectionHeaderLabel("YOUR TEAMS"))
+
+        func add(_ view: NSView) {
+            list.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        }
+        add(teamListRow(name: "All teams", detail: "everyone across your teams", owned: false) { [weak self] in self?.onOpenBoard(nil) })
+        for team in myTeams {
+            let name = team.name
+            add(teamListRow(name: name, detail: team.isOwner ? "you own this" : "member", owned: team.isOwner) { [weak self] in self?.onOpenBoard(name) })
+        }
+        addFullWidth(list, to: root)
+    }
+
+    /// One tappable row in the Teams list.
+    private func teamListRow(name: String, detail: String, owned: Bool, _ action: @escaping () -> Void) -> NSView {
+        let row = TappableRow(accessibilityLabel: name, handler: action)
+        row.wantsLayer = true
+        row.layer?.cornerRadius = 10
+        row.layer?.backgroundColor = Theme.line.cgColor
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
+
+        let content = NSStackView()
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 10
+        content.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8)
+        ])
+        content.addArrangedSubview(InitialsAvatarView(name: name, diameter: 28, fontSize: 12))
+
+        let textStack = NSStackView()
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        let nameLabel = label(owned ? "\(name)  ★" : name, size: 13.5, weight: .semibold, color: Theme.ink)
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.lineBreakMode = .byTruncatingTail
+        textStack.addArrangedSubview(nameLabel)
+        textStack.addArrangedSubview(label(detail, size: 10.5, weight: .regular, color: Theme.inkFaint))
+        content.addArrangedSubview(textStack)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        content.addArrangedSubview(spacer)
+        content.addArrangedSubview(label("›", size: 15, weight: .semibold, color: Theme.inkFaint))
+        return row
+    }
+
+    /// 0-teams empty state — the one place Create/Join appear inline (an empty
+    /// list has no rows to anchor discovery), teaching that they're also in ⋯.
+    private func emptyTeamsView() -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(label("You're not on a team yet.", size: 13, weight: .semibold, color: Theme.ink))
+        let sub = label("Create one to share usage, or join a\nteam with its name and password.", size: 11.5, weight: .regular, color: Theme.inkSoft)
+        sub.alignment = .center
+        sub.maximumNumberOfLines = 3
+        stack.addArrangedSubview(sub)
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 10
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        buttons.addArrangedSubview(ActionButton(title: "Create", style: .filled) { [weak self] in self?.onCreateTeam() })
+        buttons.addArrangedSubview(ActionButton(title: "Join", style: .ghost) { [weak self] in self?.onJoinNamedTeam() })
+        stack.addArrangedSubview(buttons)
+        stack.addArrangedSubview(label("You can also find these in the ⋯ menu.", size: 10.5, weight: .regular, color: Theme.inkFaint))
+        return stack
+    }
+
+    /// L2 — a single team's board (nil = the "All teams" union): owner join
+    /// requests, the member board, borrow section, and a Leave row.
+    private func buildBoardPage(
         root: NSStackView,
+        team: String?,
         teamBoard: [BoardRow],
         selfUserId: String?,
         incomingRequests: [IncomingRequest],
-        outgoingRequests: [OutgoingRequest]
+        outgoingRequests: [OutgoingRequest],
+        myTeams: [TeamMembership],
+        pendingJoinRequests: [JoinRequestSummary]
     ) {
-        addFullWidth(teamPageHeader(), to: root)
+        addFullWidth(navHeader(backLabel: "Teams", title: team ?? "All teams"), to: root)
         addFullWidth(divider(), to: root)
 
+        // Owner-only: pending ask-to-join requests, at the top of the board.
+        if !pendingJoinRequests.isEmpty {
+            addFullWidth(joinRequestsSection(pendingJoinRequests), to: root)
+            addFullWidth(divider(), to: root)
+        }
+
         let pendingOutgoing = outgoingRequests.filter { $0.status == "pending" || $0.status == "approved" }
+        // Lenders this device has a pending request to → show "Requested" instead
+        // of another "Request 2h".
+        let pendingLenderIds = Set(outgoingRequests.filter { $0.status == "pending" }.map(\.lenderId))
 
         if !teamBoard.isEmpty {
-            addFullWidth(teamSection(teamBoard, selfUserId: selfUserId), to: root)
+            addFullWidth(teamSection(teamBoard, selfUserId: selfUserId, pendingLenderIds: pendingLenderIds), to: root)
+        } else {
+            addFullWidth(label("No teammates posting usage yet.", size: 12, weight: .regular, color: Theme.inkSoft), to: root)
         }
 
         if !incomingRequests.isEmpty || !pendingOutgoing.isEmpty {
-            if !teamBoard.isEmpty {
-                addFullWidth(divider(), to: root)
-            }
+            addFullWidth(divider(), to: root)
             addFullWidth(borrowSection(incoming: incomingRequests, outgoing: pendingOutgoing), to: root)
         }
 
-        if teamBoard.isEmpty && incomingRequests.isEmpty && pendingOutgoing.isEmpty {
-            addFullWidth(
-                label("No teammates posting usage yet.", size: 12, weight: .regular, color: Theme.inkSoft),
-                to: root
-            )
+        // Leave — only for a specific team the user is in (not the "All" view).
+        if let team, myTeams.contains(where: { $0.name == team }) {
+            addFullWidth(divider(), to: root)
+            addFullWidth(leaveTeamRow(team: team), to: root)
         }
+    }
+
+    /// Owner's pending ask-to-join requests, each with Approve / Reject.
+    private func joinRequestsSection(_ requests: [JoinRequestSummary]) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(sectionHeaderLabel("JOIN REQUESTS"))
+        for req in requests {
+            let container = NSStackView()
+            container.orientation = .horizontal
+            container.alignment = .centerY
+            container.spacing = 9
+            container.translatesAutoresizingMaskIntoConstraints = false
+            container.addArrangedSubview(InitialsAvatarView(name: req.userName, diameter: 26, fontSize: 11))
+            let text = label("\(req.userName) wants to join", size: 12.5, weight: .regular, color: Theme.ink)
+            text.maximumNumberOfLines = 1
+            text.lineBreakMode = .byTruncatingTail
+            text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            container.addArrangedSubview(text)
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            container.addArrangedSubview(spacer)
+            let id = req.id
+            container.addArrangedSubview(ActionButton(title: "Approve", style: .filled) { [weak self] in self?.onApproveJoin(id) })
+            container.addArrangedSubview(ActionButton(title: "Reject", style: .ghost) { [weak self] in self?.onRejectJoin(id) })
+            stack.addArrangedSubview(container)
+            container.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return stack
+    }
+
+    /// A muted "Leave <team>" tappable row.
+    private func leaveTeamRow(team: String) -> NSView {
+        let row = TappableRow(accessibilityLabel: "Leave \(team)") { [weak self] in self?.onLeaveTeam(team) }
+        let lbl = label("Leave \(team)", size: 12, weight: .regular, color: Theme.terraText)
+        row.addSubview(lbl)
+        NSLayoutConstraint.activate([
+            lbl.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            lbl.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor),
+            lbl.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
+            lbl.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4)
+        ])
+        return row
     }
 
     private func addFullWidth(_ view: NSView, to stack: NSStackView) {
@@ -1137,21 +1515,30 @@ final class UsagePanelView: NSView {
     /// Header for the team page: a tappable "‹ Back" affordance (fires
     /// `onNavigateBack`) plus a "Team" title, mirroring the personal page's
     /// header row without duplicating the Claudeometer branding.
-    private func teamPageHeader() -> NSView {
+    /// Robust nav header used by the team-list and board screens: a "‹ <back>"
+    /// control with a guaranteed hit-area and required compression resistance (so
+    /// no data refresh or long title can ever squeeze the Back control away),
+    /// plus a bold title on the right.
+    private func navHeader(backLabel: String = "Back", title: String) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
 
         let back = TappableRow(accessibilityLabel: "Back") { [weak self] in self?.onNavigateBack() }
+        back.setContentCompressionResistancePriority(.required, for: .horizontal)
+        back.setContentHuggingPriority(.required, for: .horizontal)
         let backContent = NSStackView()
         backContent.orientation = .horizontal
         backContent.alignment = .centerY
         backContent.spacing = 2
         backContent.translatesAutoresizingMaskIntoConstraints = false
         backContent.addArrangedSubview(label("‹", size: 17, weight: .semibold, color: Theme.terraText))
-        backContent.addArrangedSubview(label("Back", size: 13, weight: .medium, color: Theme.terraText))
+        let backText = label(backLabel, size: 13, weight: .medium, color: Theme.terraText)
+        backText.setContentCompressionResistancePriority(.required, for: .horizontal)
+        backContent.addArrangedSubview(backText)
         back.addSubview(backContent)
         NSLayoutConstraint.activate([
             backContent.leadingAnchor.constraint(equalTo: back.leadingAnchor),
@@ -1165,7 +1552,10 @@ final class UsagePanelView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(spacer)
 
-        row.addArrangedSubview(label("Team", size: 15, weight: .bold, color: Theme.ink))
+        let titleLabel = label(title, size: 15, weight: .bold, color: Theme.ink)
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.lineBreakMode = .byTruncatingTail
+        row.addArrangedSubview(titleLabel)
 
         return row
     }
@@ -1428,7 +1818,7 @@ final class UsagePanelView: NSView {
 
     /// Team board: one row per teammate, busiest (highest 5-hour usage) first.
     /// Rows with no usage posted yet (`fiveHourPct == nil`) sort last.
-    private func teamSection(_ board: [BoardRow], selfUserId: String?) -> NSView {
+    private func teamSection(_ board: [BoardRow], selfUserId: String?, pendingLenderIds: Set<String> = []) -> NSView {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1442,14 +1832,17 @@ final class UsagePanelView: NSView {
         // for a "Borrowing · H:MM" status pill on the row you're already borrowing from.
         let myRow = selfUserId.flatMap { id in board.first { $0.userId == id } }
 
-        let sorted = board.sorted { ($0.fiveHourPct ?? -1) > ($1.fiveHourPct ?? -1) }
+        // Online teammates first, then least-depleted first within each group —
+        // so the best borrow candidates (online + most headroom) sit at the top.
+        let sorted = TeamBoardSort.forDisplay(board, now: Date())
         for row in sorted {
             let view = teamRow(
                 row,
                 isSelf: selfUserId != nil && row.userId == selfUserId,
                 myBorrowingFrom: myRow?.borrowingFrom,
                 myBorrowingUntil: myRow?.borrowingUntil,
-                myFiveHourPct: myRow?.fiveHourPct
+                myFiveHourPct: myRow?.fiveHourPct,
+                hasPendingRequest: pendingLenderIds.contains(row.userId)
             )
             stack.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -1480,7 +1873,8 @@ final class UsagePanelView: NSView {
         isSelf: Bool,
         myBorrowingFrom: String? = nil,
         myBorrowingUntil: Int? = nil,
-        myFiveHourPct: Double? = nil
+        myFiveHourPct: Double? = nil,
+        hasPendingRequest: Bool = false
     ) -> NSView {
         let container = NSStackView()
         container.orientation = .vertical
@@ -1488,13 +1882,17 @@ final class UsagePanelView: NSView {
         container.spacing = 7
         container.translatesAutoresizingMaskIntoConstraints = false
 
+        // Presence/freshness from the teammate's last usage post — drives the
+        // avatar status dot, the "· Xm ago" caption color, and stale dimming.
+        let activity = TeamActivity.classify(postedAt: row.postedAt, now: Date())
+
         let top = NSStackView()
         top.orientation = .horizontal
         top.alignment = .centerY
         top.spacing = 9
         top.translatesAutoresizingMaskIntoConstraints = false
 
-        let avatar = InitialsAvatarView(name: row.displayName, diameter: 26, fontSize: 11)
+        let avatar = InitialsAvatarView(name: row.displayName, diameter: 26, fontSize: 11, activity: activity)
         top.addArrangedSubview(avatar)
 
         let nameStack = NSStackView()
@@ -1510,9 +1908,13 @@ final class UsagePanelView: NSView {
         nameLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         nameStack.addArrangedSubview(nameLabel)
 
-        if let resetAt = row.resetAt {
-            let resetDate = Date(timeIntervalSince1970: TimeInterval(resetAt))
-            let caption = label("resets \(relativeResetText(resetDate))", size: 10.5, weight: .regular, color: Theme.inkFaint)
+        // Caption combines the reset phrase with a "· Xm ago" freshness suffix,
+        // so a teammate who closed their laptop at 25% shows how old that number
+        // is instead of looking current. Amber once genuinely stale.
+        let resetText = row.resetAt.map { "resets \(relativeResetText(Date(timeIntervalSince1970: TimeInterval($0))))" }
+        let (captionText, isStale) = TeamActivity.caption(resetText: resetText, postedAt: row.postedAt, now: Date())
+        if let captionText {
+            let caption = label(captionText, size: 10.5, weight: .regular, color: isStale ? Theme.yellow : Theme.inkFaint)
             caption.maximumNumberOfLines = 1
             caption.lineBreakMode = .byTruncatingTail
             nameStack.addArrangedSubview(caption)
@@ -1533,6 +1935,11 @@ final class UsagePanelView: NSView {
         if !isSelf {
             if let myBorrowingFrom, row.displayName == myBorrowingFrom {
                 top.addArrangedSubview(pillTag("Borrowing · \(borrowCountdownText(until: myBorrowingUntil))", style: .borrow))
+            } else if hasPendingRequest {
+                // Already asked this teammate — one outstanding request per lender
+                // until they approve or reject, so show a non-interactive status
+                // instead of another "Request 2h".
+                top.addArrangedSubview(pillTag("Requested", style: .neutral))
             } else if Self.canBorrow(mine: myFiveHourPct, lender: row.fiveHourPct) {
                 top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
                     self?.onRequestBorrow(row.userId)
@@ -1592,6 +1999,9 @@ final class UsagePanelView: NSView {
         leadingSpacer.widthAnchor.constraint(equalToConstant: 35).isActive = true
         indented.addArrangedSubview(leadingSpacer)
         indented.addArrangedSubview(bottom)
+        // Fade the bar + % when the number is stale so it visibly recedes and
+        // isn't mistaken for a current reading.
+        indented.alphaValue = isStale ? 0.4 : 1.0
         container.addArrangedSubview(indented)
         indented.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
 
@@ -1601,6 +2011,7 @@ final class UsagePanelView: NSView {
     private enum PillStyle {
         case borrow
         case lend
+        case neutral
     }
 
     /// Small rounded pill matching the mockup's `.team-tag.borrow` / `.team-tag.lend`
@@ -1610,6 +2021,7 @@ final class UsagePanelView: NSView {
         switch style {
         case .borrow: (background, border, textColor) = (Theme.terraSoft, Theme.terraSoftBorder, Theme.terraText)
         case .lend: (background, border, textColor) = (Theme.greenSoft, Theme.greenSoftBorder, Theme.green)
+        case .neutral: (background, border, textColor) = (Theme.track, Theme.line, Theme.inkSoft)
         }
 
         let container = NSView()
@@ -1814,7 +2226,7 @@ final class UsagePanelView: NSView {
             content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -9)
         ])
 
-        content.addArrangedSubview(label("Team", size: 13, weight: .medium, color: Theme.ink))
+        content.addArrangedSubview(label("Teams", size: 13, weight: .medium, color: Theme.ink))
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1919,6 +2331,8 @@ final class UsagePanelView: NSView {
     @objc private func loginTapped() { onLogin() }
     @objc private func quitTapped() { onQuit() }
     @objc private func joinTeamMenuItemTapped() { onJoinTeam() }
+    @objc private func createTeamMenuItemTapped() { onCreateTeam() }
+    @objc private func joinNamedTeamMenuItemTapped() { onJoinNamedTeam() }
     @objc private func setTeamRelayURLMenuItemTapped() { onSetTeamRelayURL() }
 
     @objc private func overflowTapped(_ sender: NSButton) {
@@ -1929,12 +2343,21 @@ final class UsagePanelView: NSView {
         let loginItem = NSMenuItem(title: "Login", action: #selector(loginTapped), keyEquivalent: "")
         loginItem.target = self
         menu.addItem(loginItem)
-        if !isTeamEnrolled {
+        if isTeamEnrolled {
+            // Multi-team actions, moved out of the on-screen UI into the menu.
+            let createItem = NSMenuItem(title: "Create team…", action: #selector(createTeamMenuItemTapped), keyEquivalent: "")
+            createItem.target = self
+            menu.addItem(createItem)
+            let joinNamedItem = NSMenuItem(title: "Join team…", action: #selector(joinNamedTeamMenuItemTapped), keyEquivalent: "")
+            joinNamedItem.target = self
+            menu.addItem(joinNamedItem)
+        } else {
+            // Not yet enrolled → the one-time "join the relay under a name" flow.
             let joinTeamItem = NSMenuItem(title: "Join team…", action: #selector(joinTeamMenuItemTapped), keyEquivalent: "")
             joinTeamItem.target = self
             menu.addItem(joinTeamItem)
         }
-        // Always visible (unlike "Join team…" above): this is how a teammate
+        // Always visible: this is how a teammate
         // points a fresh install at the relay before team mode is enabled.
         let setRelayItem = NSMenuItem(title: "Set team relay URL…", action: #selector(setTeamRelayURLMenuItemTapped), keyEquivalent: "")
         setRelayItem.target = self
@@ -2122,10 +2545,14 @@ final class TappableRow: NSView {
 final class InitialsAvatarView: NSView {
     private let initial: String
     private let fontSize: CGFloat
+    /// Presence state for the corner status dot. `nil` (the default) draws no
+    /// dot, so avatars outside the team board (e.g. borrow cards) are unchanged.
+    private let activity: TeamActivity?
 
-    init(name: String, diameter: CGFloat, fontSize: CGFloat) {
+    init(name: String, diameter: CGFloat, fontSize: CGFloat, activity: TeamActivity? = nil) {
         self.initial = InitialsAvatarView.firstLetter(of: name)
         self.fontSize = fontSize
+        self.activity = activity
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -2157,6 +2584,26 @@ final class InitialsAvatarView: NSView {
         let size = text.size(withAttributes: attributes)
         let origin = NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2 - 0.5)
         text.draw(at: origin, withAttributes: attributes)
+
+        if let activity {
+            drawStatusDot(online: activity.isOnline)
+        }
+    }
+
+    /// A small presence dot flush in the bottom-right, overlapping the disc edge,
+    /// with a card-colored ring so it reads as a separate badge: solid green when
+    /// online, hollow-looking faint ink when offline/idle/stale.
+    private func drawStatusDot(online: Bool) {
+        let ring: CGFloat = 1.5
+        let dotDiameter = (bounds.width * 0.32).rounded()
+        let outer = dotDiameter + ring * 2
+        let outerRect = NSRect(x: bounds.maxX - outer, y: bounds.minY, width: outer, height: outer)
+        Theme.card.setFill()
+        NSBezierPath(ovalIn: outerRect).fill()
+
+        let dotColor = online ? Theme.green : Theme.inkFaint.withAlphaComponent(0.45)
+        dotColor.setFill()
+        NSBezierPath(ovalIn: outerRect.insetBy(dx: ring, dy: ring)).fill()
     }
 }
 

@@ -146,6 +146,52 @@ public struct OutgoingRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// One of the caller's own team memberships, from `GET /my-teams` — used to
+/// populate the client's team switcher (includes teams joined server-side).
+public struct TeamMembership: Codable, Equatable, Sendable {
+    public let name: String
+    public let role: String
+
+    public init(name: String, role: String) {
+        self.name = name
+        self.role = role
+    }
+
+    /// Whether the caller owns this team (can approve joins, manage members).
+    public var isOwner: Bool { role == "owner" }
+}
+
+/// One entry of `GET /teams`'s public-team discovery list.
+public struct TeamSummary: Codable, Equatable, Sendable {
+    public let name: String
+    public let memberCount: Int
+
+    public init(name: String, memberCount: Int) {
+        self.name = name
+        self.memberCount = memberCount
+    }
+}
+
+/// One pending ask-to-join, as returned by `GET /teams/{name}/requests`.
+public struct JoinRequestSummary: Codable, Equatable, Sendable {
+    public let id: String
+    public let userName: String
+    public let createdAt: Int
+
+    public init(id: String, userName: String, createdAt: Int) {
+        self.id = id
+        self.userName = userName
+        self.createdAt = createdAt
+    }
+}
+
+/// The result of a `POST /teams/{name}/join`: either joined immediately (correct
+/// password) or a pending ask-to-join awaiting owner approval.
+public enum JoinOutcome: Equatable, Sendable {
+    case joined
+    case pending
+}
+
 /// `GET /borrow/inbox` response body.
 public struct BorrowInbox: Codable, Equatable, Sendable {
     public let incoming: [IncomingRequest]
@@ -229,13 +275,87 @@ public struct RelayClient: Sendable {
         try Self.checkStatus(response, data: data, expect: 204)
     }
 
-    /// Fetches the full team board. Requires a prior `enroll`.
-    public func fetchBoard() async throws -> [BoardRow] {
+    /// Fetches the board. With `team` nil, returns the union of the caller's
+    /// teams; with a team name, that team's board (caller must be a member).
+    /// Requires a prior `enroll`.
+    public func fetchBoard(team: String? = nil) async throws -> [BoardRow] {
         guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
-        let request = try signedRequest(method: "GET", path: "/board", body: Data(), userId: userId)
+        let query = team.map { [URLQueryItem(name: "team", value: $0)] } ?? []
+        let request = try signedRequest(method: "GET", path: "/board", body: Data(), userId: userId, query: query)
         let (data, response) = try await session.data(for: request)
         try Self.checkStatus(response, data: data, expect: 200)
         return try Self.decode([BoardRow].self, from: data)
+    }
+
+    /// Creates a team owned by the caller. Requires a prior `enroll`.
+    public func createTeam(name: String, password: String, visibility: String) async throws {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let body = try JSONEncoder().encode(CreateTeamBody(name: name, password: password, visibility: visibility))
+        let request = try signedRequest(method: "POST", path: "/teams", body: body, userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 200)
+    }
+
+    /// Lists the caller's own team memberships (name + role). Requires a prior `enroll`.
+    public func myTeams() async throws -> [TeamMembership] {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let request = try signedRequest(method: "GET", path: "/my-teams", body: Data(), userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 200)
+        return try Self.decode([TeamMembership].self, from: data)
+    }
+
+    /// Lists public teams for discovery. Requires a prior `enroll`.
+    public func listPublicTeams() async throws -> [TeamSummary] {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let request = try signedRequest(method: "GET", path: "/teams", body: Data(), userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 200)
+        return try Self.decode([TeamSummary].self, from: data)
+    }
+
+    /// Joins a team: a correct password joins immediately (`.joined`); a public
+    /// team without/with a wrong password records an ask-to-join (`.pending`).
+    /// Requires a prior `enroll`.
+    public func joinTeam(name: String, password: String?) async throws -> JoinOutcome {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let body = try JSONEncoder().encode(JoinTeamBody(password: password ?? ""))
+        let request = try signedRequest(method: "POST", path: "/teams/\(name)/join", body: body, userId: userId)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RelayError.decode }
+        switch http.statusCode {
+        case 200: return .joined
+        case 202: return .pending
+        default: throw RelayError.http(status: http.statusCode, body: String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    /// Leaves a team (an emptied team is deleted server-side). Requires a prior `enroll`.
+    public func leaveTeam(name: String) async throws {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let request = try signedRequest(method: "POST", path: "/teams/\(name)/leave", body: Data(), userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 204)
+    }
+
+    /// Lists a team's pending ask-to-join requests. Caller must be the owner.
+    /// Requires a prior `enroll`.
+    public func listJoinRequests(team: String) async throws -> [JoinRequestSummary] {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let request = try signedRequest(method: "GET", path: "/teams/\(team)/requests", body: Data(), userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 200)
+        return try Self.decode([JoinRequestSummary].self, from: data)
+    }
+
+    /// Approves or rejects a pending join request. Caller must be the owner.
+    /// Requires a prior `enroll`.
+    public func decideJoinRequest(team: String, id: String, approve: Bool) async throws {
+        guard let userId = identity.loadOrNil()?.userId else { throw RelayError.notEnrolled }
+        let body = try JSONEncoder().encode(DecideJoinBody(approve: approve))
+        let request = try signedRequest(method: "POST", path: "/teams/\(team)/requests/\(id)", body: body, userId: userId)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkStatus(response, data: data, expect: 204)
     }
 
     /// Requests to borrow `hours` from `lenderId`. Requires a prior `enroll`.
@@ -305,8 +425,16 @@ public struct RelayClient: Sendable {
     /// Builds a `URLRequest` carrying the canonical signature headers from
     /// `relay/PROTOCOL.md`: `X-Timestamp`, `X-Signature`, and (when `userId`
     /// is non-nil) `X-User-Id`.
-    private func signedRequest(method: String, path: String, body: Data, userId: String?) throws -> URLRequest {
-        var request = URLRequest(url: config.baseURL.appendingPathComponent(path))
+    private func signedRequest(method: String, path: String, body: Data, userId: String?, query: [URLQueryItem] = []) throws -> URLRequest {
+        var url = config.baseURL.appendingPathComponent(path)
+        // The signature covers the path only (per PROTOCOL.md); the query is
+        // attached to the URL but not signed. Server-side authorization
+        // (membership checks) guards what the query can select.
+        if !query.isEmpty, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            comps.queryItems = query
+            if let withQuery = comps.url { url = withQuery }
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         if !body.isEmpty {
             request.httpBody = body
@@ -380,4 +508,18 @@ private struct BorrowPickupResponseBody: Decodable {
 
 private struct BorrowRevokeRequestBody: Encodable {
     let requestId: String
+}
+
+private struct CreateTeamBody: Encodable {
+    let name: String
+    let password: String
+    let visibility: String
+}
+
+private struct JoinTeamBody: Encodable {
+    let password: String
+}
+
+private struct DecideJoinBody: Encodable {
+    let approve: Bool
 }

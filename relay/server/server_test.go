@@ -40,7 +40,9 @@ func newTestServer(t *testing.T) *Server {
 func signedRequest(method, path string, body []byte, userID string, priv ed25519.PrivateKey, ts int64) *http.Request {
 	r := httptest.NewRequest(method, path, bytes.NewReader(body))
 	tss := strconv.FormatInt(ts, 10)
-	msg := signing.CanonicalMessage(method, path, tss, signing.BodySHA256Hex(body))
+	// Sign the path only (no query string), matching the server's r.URL.Path
+	// verification per PROTOCOL.md.
+	msg := signing.CanonicalMessage(method, r.URL.Path, tss, signing.BodySHA256Hex(body))
 	r.Header.Set("X-Timestamp", tss)
 	r.Header.Set("X-Signature", signing.Sign(priv, msg))
 	if userID != "" {
@@ -218,12 +220,27 @@ type borrowInboxResponse struct {
 	Outgoing []store.OutgoingRequest `json:"outgoing"`
 }
 
+// shareTeam puts the given enrolled user ids into one private team (the first
+// id becomes the owner) so borrow requests between them pass the shared-team gate.
+func shareTeam(t *testing.T, s *Server, ids ...string) {
+	t.Helper()
+	if err := s.store.CreateTeam("shared", "h", "private", ids[0], 1); err != nil {
+		t.Fatalf("shareTeam create: %v", err)
+	}
+	for _, id := range ids[1:] {
+		if err := s.store.AddMember("shared", id, "member", 2); err != nil {
+			t.Fatalf("shareTeam add %s: %v", id, err)
+		}
+	}
+}
+
 func TestBorrowHandshakeHappyPath(t *testing.T) {
 	s := newTestServer(t)
 	aPub, aPriv, _ := signing.GenerateKeypair()
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enrollWithEncryptionKey(t, s, "Alice", "dev-a", "alice-encryption-pub", aPub, aPriv)
 	bID := enrollWithEncryptionKey(t, s, "Bob", "dev-b", "bob-encryption-pub", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	// A requests 2 hours from B.
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 2})
@@ -305,6 +322,7 @@ func TestBorrowDecision_OwnershipEnforced(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})
 	rec := call(t, s, "POST", "/borrow/request", reqBody, aID, aPriv)
@@ -327,6 +345,7 @@ func TestBorrowPickup_OwnershipEnforced(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})
 	rec := call(t, s, "POST", "/borrow/request", reqBody, aID, aPriv)
@@ -395,6 +414,7 @@ func TestBorrowDecision_RequiresCiphertextOnApprove(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})
 	rec := call(t, s, "POST", "/borrow/request", reqBody, aID, aPriv)
@@ -416,6 +436,7 @@ func TestBorrowDecision_RejectFlow(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})
 	rec := call(t, s, "POST", "/borrow/request", reqBody, aID, aPriv)
@@ -451,6 +472,7 @@ func TestBorrowRevoke_ByEitherParty(t *testing.T) {
 	bPub, bPriv, _ := signing.GenerateKeypair()
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
+	shareTeam(t, s, aID, bID)
 
 	// Revoke by the lender before any decision.
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})
@@ -503,6 +525,7 @@ func TestBorrowRevoke_OwnershipEnforced(t *testing.T) {
 	aID := enroll(t, s, "Alice", "dev-a", aPub, aPriv)
 	bID := enroll(t, s, "Bob", "dev-b", bPub, bPriv)
 	cID := enroll(t, s, "Carol", "dev-c", cPub, cPriv)
+	shareTeam(t, s, aID, bID)
 	_ = cID
 
 	reqBody, _ := json.Marshal(borrowRequestRequest{LenderID: bID, Hours: 1})

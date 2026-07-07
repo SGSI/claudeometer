@@ -5,7 +5,8 @@
 # reboot just refreshes the binary.
 set -euo pipefail
 
-BUCKET=claudeometer-relay-op-d2r
+# Set these to your own GCS bucket + object before provisioning your VM.
+BUCKET="${RELAY_BUCKET:-your-relay-bucket}"
 BIN=claudeometer-relay-linux-amd64
 
 mkdir -p /opt/claudeometer-relay /var/lib/claudeometer-relay
