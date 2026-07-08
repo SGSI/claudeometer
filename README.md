@@ -45,6 +45,8 @@ Already tapped the old `SGSI/homebrew-claudeometer` repo? Point your tap here on
 ```sh
 brew untap --force sgsi/claudeometer
 brew tap sgsi/claudeometer https://github.com/SGSI/claudeometer.git
+brew trust sgsi/claudeometer
+brew reinstall --cask claudeometer   # reinstall (not upgrade) — works even if the app was deleted from /Applications
 ```
 
 Homebrew clears the macOS quarantine flag during install, so the app opens with **no
