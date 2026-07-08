@@ -69,7 +69,7 @@ echo "================  NOTARIZED BUILD READY  ================"
 echo "dmg:    $DMG"
 echo "sha256: $SHA"
 echo
-echo "Bump the Homebrew cask in SGSI/homebrew-claudeometer (Casks/claudeometer.rb):"
+echo "Bump the Homebrew cask in this repo (Casks/claudeometer.rb), commit, and push:"
 echo "    version \"$VERSION\""
 echo "    sha256 \"$SHA\""
 echo "  (and delete the postflight quarantine-strip block — no longer needed once notarized)"

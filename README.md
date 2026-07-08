@@ -30,10 +30,21 @@ Everything stays on your machine. The app sends no telemetry anywhere.
 
 ### Homebrew (recommended)
 
+The Homebrew cask lives in this repo (`Casks/claudeometer.rb`), so tap it with an
+explicit URL (the repo isn't named `homebrew-*`):
+
 ```sh
-brew tap SGSI/claudeometer
+brew tap sgsi/claudeometer https://github.com/SGSI/claudeometer.git
 brew trust sgsi/claudeometer        # one-time: Homebrew 6.0+ requires trusting third-party taps
 brew install --cask claudeometer
+```
+
+Already tapped the old `SGSI/homebrew-claudeometer` repo? Point your tap here once
+(the installed app is untouched; future `brew upgrade`s come from this repo):
+
+```sh
+brew untap --force sgsi/claudeometer
+brew tap sgsi/claudeometer https://github.com/SGSI/claudeometer.git
 ```
 
 Homebrew clears the macOS quarantine flag during install, so the app opens with **no
