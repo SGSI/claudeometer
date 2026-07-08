@@ -3,6 +3,20 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.3.0] — 2026-07-08
+
+### Added
+- **Multiple teams.** Create, join, and leave more than one team from a new
+  drill-in Teams hub (team list → per-team board). Team names are globally
+  unique, owners approve join requests, and usage sharing + borrowing are
+  scoped to each team — what you share with one team is redacted from others.
+- **Team-board presence.** Boards now show who's online and how fresh each
+  teammate's usage is, sorted online-first.
+
+### Changed
+- Borrowing is enforced within shared teams: one active borrow at a time, and
+  at most one pending request per lender.
+
 ## [0.2.4] — 2026-07-02
 
 ### Added
