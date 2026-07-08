@@ -780,6 +780,13 @@
 brew trust sgsi/claudeometer
 brew install --cask claudeometer</span>
 
+        <p class="or">Installed before July&nbsp;2026? The tap moved into this repo — if you see
+        <i>"remote mismatch"</i> or upgrades say you're up to date when you're not, re-point it once:</p>
+        <span class="cmd">brew untap --force sgsi/claudeometer
+brew tap sgsi/claudeometer https://github.com/SGSI/claudeometer.git
+brew trust sgsi/claudeometer
+brew upgrade --cask claudeometer</span>
+
         <p class="or">Or <b>download the .dmg</b> — drag Claudeometer to Applications. It isn't notarized yet, so clear the quarantine flag once:</p>
         <span class="cmd">xattr -dr com.apple.quarantine /Applications/Claudeometer.app</span>
         <div style="margin-top:22px">
