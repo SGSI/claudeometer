@@ -3,6 +3,12 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [0.5.0] — 2026-07-09
+
+### Changed
+- Version-bump release with no functional changes — cut to verify the new
+  in-repo Homebrew tap (`Casks/` in this repo) delivers upgrades end-to-end.
+
 ## [0.3.0] — 2026-07-08
 
 ### Added
