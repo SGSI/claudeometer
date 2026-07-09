@@ -10,11 +10,23 @@ This project adheres to [Semantic Versioning](https://semver.org).
   windows roll over, matching the 5-hour gauge's `resets …` caption.
 
 ### Fixed
-- **Borrowing weighs the weekly limit.** A teammate is only offered as a lender
-  when they're less depleted than you on the 5-hour *and* the weekly window,
-  and their weekly quota isn't already spent — previously only the 5-hour
-  window was compared, so you could borrow credentials that hit the weekly
-  limit immediately. `availableToLend` likewise now requires headroom on both.
+- **Borrowing weighs the weekly limit.** Eligibility compared only the 5-hour
+  window, so a teammate whose 5-hour window had just reset looked like a good
+  lender even with their weekly quota nearly spent — borrowing them hit the
+  weekly limit immediately. A borrow now spends the *lender's* quota on both
+  windows, so lenders are ranked by usable capacity (`min` of the two windows'
+  headroom) and must beat your own by a worthwhile margin. A lender whose
+  5-hour window rolls over during the borrow is valued at its full allowance;
+  your own imminent reset likewise suppresses a pointless borrow.
+  `availableToLend` now requires headroom on both windows.
+- **Lending while borrowing leaked a third party's credentials.** Approving an
+  incoming request read the *live* Claude Code keychain item, which holds
+  someone else's blob while you are borrowing — so the requester received that
+  person's Claude login without their consent. Approval now always seals your
+  own account's credential.
+- **Borrow buttons the relay would reject are no longer shown.** "Request 2h"
+  was offered while you already held an active borrow, and on teammates already
+  lending to someone else; both cases were rejected server-side with HTTP 409.
 
 ## [0.5.0] — 2026-07-09
 

@@ -432,7 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             outgoingRequests: borrowController.outgoing,
             onRequestBorrow: { [weak self] lenderId in
                 Task { @MainActor in
-                    if let error = await self?.borrowController.request(lenderId: lenderId, hours: 2) {
+                    if let error = await self?.borrowController.request(lenderId: lenderId, hours: borrowRequestHours) {
                         self?.showErrorAlert(title: "Couldn't send request", message: error)
                     }
                 }
@@ -1850,8 +1850,7 @@ final class UsagePanelView: NSView {
                 isSelf: selfUserId != nil && row.userId == selfUserId,
                 myBorrowingFrom: myRow?.borrowingFrom,
                 myBorrowingUntil: myRow?.borrowingUntil,
-                myFiveHourPct: myRow?.fiveHourPct,
-                mySevenDayPct: myRow?.sevenDayPct,
+                myUsage: myRow.map(borrowUsage(from:)),
                 hasPendingRequest: pendingLenderIds.contains(row.userId)
             )
             stack.addArrangedSubview(view)
@@ -1875,8 +1874,7 @@ final class UsagePanelView: NSView {
         isSelf: Bool,
         myBorrowingFrom: String? = nil,
         myBorrowingUntil: Int? = nil,
-        myFiveHourPct: Double? = nil,
-        mySevenDayPct: Double? = nil,
+        myUsage: BorrowPolicy.Usage? = nil,
         hasPendingRequest: Bool = false
     ) -> NSView {
         let container = NSStackView()
@@ -1935,7 +1933,17 @@ final class UsagePanelView: NSView {
         // lending to you). Otherwise a lendable teammate keeps "Request 2h". The
         // borrow/lend pills below move to their own full-width line(s), so this
         // trailing item never competes with them for width and truncates.
+        //
+        // Two states render nothing at all rather than a button the relay would
+        // reject: while you hold any active borrow (`server.go` → 409 "you
+        // already have an active borrow") and while this teammate is lending to
+        // someone else (409 "lender is currently lending"). A teammate who is
+        // themselves *borrowing* stays requestable — they lend their own account,
+        // not the one they hold.
         if !isSelf {
+            let iAmBorrowing = myBorrowingFrom != nil
+            let lenderIsBusy = !(row.lendingTo ?? []).isEmpty
+
             if let myBorrowingFrom, row.displayName == myBorrowingFrom {
                 top.addArrangedSubview(pillTag("Borrowing · \(borrowCountdownText(until: myBorrowingUntil))", style: .borrow))
             } else if hasPendingRequest {
@@ -1943,13 +1951,13 @@ final class UsagePanelView: NSView {
                 // until they approve or reject, so show a non-interactive status
                 // instead of another "Request 2h".
                 top.addArrangedSubview(pillTag("Requested", style: .neutral))
-            } else if BorrowPolicy.canBorrow(
-                mineFive: myFiveHourPct,
-                mineSeven: mySevenDayPct,
-                lenderFive: row.fiveHourPct,
-                lenderSeven: row.sevenDayPct
+            } else if !iAmBorrowing, !lenderIsBusy, let myUsage, BorrowPolicy.canBorrow(
+                mine: myUsage,
+                lender: borrowUsage(from: row),
+                horizon: borrowRequestHorizon,
+                now: Date()
             ) {
-                top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
+                top.addArrangedSubview(ActionButton(title: "Request \(borrowRequestHours)h", style: .ghost) { [weak self] in
                     self?.onRequestBorrow(row.userId)
                 })
             }
@@ -2259,12 +2267,14 @@ final class UsagePanelView: NSView {
             return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: Theme.terraDeep)
         }
         let myRow = selfUserId.flatMap { id in board.first { $0.userId == id } }
-        let lendable = board.filter {
-            $0.userId != selfUserId && BorrowPolicy.canBorrow(
-                mineFive: myRow?.fiveHourPct,
-                mineSeven: myRow?.sevenDayPct,
-                lenderFive: $0.fiveHourPct,
-                lenderSeven: $0.sevenDayPct
+        let now = Date()
+        let lendable = board.filter { row in
+            guard row.userId != selfUserId, let myUsage = myRow.map(borrowUsage(from:)) else { return false }
+            return BorrowPolicy.canBorrow(
+                mine: myUsage,
+                lender: borrowUsage(from: row),
+                horizon: borrowRequestHorizon,
+                now: now
             )
         }.count
         if lendable > 0 {
@@ -3359,6 +3369,22 @@ private func usageAdvice(utilization: Double, reset: Date?, hotSessions: [LocalS
     }
 
     return ("All good :)", "Plenty of room. Build calmly.")
+}
+
+/// Every "Request" button asks for the same window, so eligibility is judged over
+/// exactly the window the borrow would cover — a lender whose 5-hour window rolls
+/// over inside it is worth more than their current percentage says.
+let borrowRequestHours = 2
+let borrowRequestHorizon = TimeInterval(borrowRequestHours) * 3600
+
+/// Projects a board row onto the shape `BorrowPolicy` reasons about. Only the
+/// 5-hour reset crosses the relay, so the weekly window carries no reset time.
+private func borrowUsage(from row: BoardRow) -> BorrowPolicy.Usage {
+    BorrowPolicy.Usage(
+        fivePct: row.fiveHourPct,
+        sevenPct: row.sevenDayPct,
+        fiveResetsAt: row.resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+    )
 }
 
 /// The weekly rollover reported by the API. `seven_day` is the headline window,
