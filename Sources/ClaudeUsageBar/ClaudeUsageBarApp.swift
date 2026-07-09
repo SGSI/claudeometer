@@ -274,7 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             fiveHourPct: fiveHourPct,
             sevenDayPct: sevenDayPct,
             resetAt: resetAt,
-            availableToLend: TeamController.availableToLend(fiveHourPct: fiveHourPct)
+            availableToLend: BorrowPolicy.availableToLend(fiveHourPct: fiveHourPct, sevenDayPct: sevenDayPct)
         )
         await teamController.refreshBoard()
     }
@@ -1695,6 +1695,15 @@ final class UsagePanelView: NSView {
         addWeekRow("Opus", snapshot.usage.sevenDayOpus, to: stack)
         addWeekRow("OAuth apps", snapshot.usage.sevenDayOAuthApps, to: stack)
 
+        // The weekly windows all roll over together, so the first one carrying a
+        // `resets_at` speaks for the section — mirroring the 5-hour hero caption.
+        if let resetsAt = weeklyResetsAt(snapshot.usage) {
+            let caption = label("resets \(resetText(resetsAt))", size: 11, weight: .regular, color: Theme.inkFaint)
+            caption.maximumNumberOfLines = 1
+            caption.lineBreakMode = .byTruncatingTail
+            stack.addArrangedSubview(caption)
+        }
+
         return stack
     }
 
@@ -1842,6 +1851,7 @@ final class UsagePanelView: NSView {
                 myBorrowingFrom: myRow?.borrowingFrom,
                 myBorrowingUntil: myRow?.borrowingUntil,
                 myFiveHourPct: myRow?.fiveHourPct,
+                mySevenDayPct: myRow?.sevenDayPct,
                 hasPendingRequest: pendingLenderIds.contains(row.userId)
             )
             stack.addArrangedSubview(view)
@@ -1860,20 +1870,13 @@ final class UsagePanelView: NSView {
     /// `myBorrowingFrom`/`myBorrowingUntil` are the current user's own active
     /// borrow (lender display name + unix end time), used only to decide the
     /// trailing affordance; nil when the user isn't borrowing.
-    /// You can request from a teammate when your OWN 5-hour usage is higher than
-    /// theirs — i.e. borrow from whoever is less depleted than you. Both sides
-    /// must have posted usage.
-    static func canBorrow(mine: Double?, lender: Double?) -> Bool {
-        guard let mine, let lender else { return false }
-        return mine > lender
-    }
-
     private func teamRow(
         _ row: BoardRow,
         isSelf: Bool,
         myBorrowingFrom: String? = nil,
         myBorrowingUntil: Int? = nil,
         myFiveHourPct: Double? = nil,
+        mySevenDayPct: Double? = nil,
         hasPendingRequest: Bool = false
     ) -> NSView {
         let container = NSStackView()
@@ -1940,7 +1943,12 @@ final class UsagePanelView: NSView {
                 // until they approve or reject, so show a non-interactive status
                 // instead of another "Request 2h".
                 top.addArrangedSubview(pillTag("Requested", style: .neutral))
-            } else if Self.canBorrow(mine: myFiveHourPct, lender: row.fiveHourPct) {
+            } else if BorrowPolicy.canBorrow(
+                mineFive: myFiveHourPct,
+                mineSeven: mySevenDayPct,
+                lenderFive: row.fiveHourPct,
+                lenderSeven: row.sevenDayPct
+            ) {
                 top.addArrangedSubview(ActionButton(title: "Request 2h", style: .ghost) { [weak self] in
                     self?.onRequestBorrow(row.userId)
                 })
@@ -2250,8 +2258,15 @@ final class UsagePanelView: NSView {
         if !incoming.isEmpty {
             return badge(text: "\(incoming.count) request\(incoming.count == 1 ? "" : "s")", color: Theme.terraDeep)
         }
-        let myPct = selfUserId.flatMap { id in board.first { $0.userId == id }?.fiveHourPct }
-        let lendable = board.filter { $0.userId != selfUserId && Self.canBorrow(mine: myPct, lender: $0.fiveHourPct) }.count
+        let myRow = selfUserId.flatMap { id in board.first { $0.userId == id } }
+        let lendable = board.filter {
+            $0.userId != selfUserId && BorrowPolicy.canBorrow(
+                mineFive: myRow?.fiveHourPct,
+                mineSeven: myRow?.sevenDayPct,
+                lenderFive: $0.fiveHourPct,
+                lenderSeven: $0.sevenDayPct
+            )
+        }.count
         if lendable > 0 {
             return label("\(lendable) lendable", size: 11, weight: .regular, color: Theme.inkSoft)
         }
@@ -3344,6 +3359,16 @@ private func usageAdvice(utilization: Double, reset: Date?, hotSessions: [LocalS
     }
 
     return ("All good :)", "Plenty of room. Build calmly.")
+}
+
+/// The weekly rollover reported by the API. `seven_day` is the headline window,
+/// but a plan that only exposes the per-model ones still has a reset to show, so
+/// fall through to those rather than dropping the caption.
+private func weeklyResetsAt(_ usage: UsageResponse) -> Date? {
+    usage.sevenDay?.resetsAt
+        ?? usage.sevenDaySonnet?.resetsAt
+        ?? usage.sevenDayOpus?.resetsAt
+        ?? usage.sevenDayOAuthApps?.resetsAt
 }
 
 private func resetText(_ date: Date) -> String {

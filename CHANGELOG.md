@@ -3,6 +3,19 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **Weekly reset time.** The "This week" section now shows when the weekly
+  windows roll over, matching the 5-hour gauge's `resets …` caption.
+
+### Fixed
+- **Borrowing weighs the weekly limit.** A teammate is only offered as a lender
+  when they're less depleted than you on the 5-hour *and* the weekly window,
+  and their weekly quota isn't already spent — previously only the 5-hour
+  window was compared, so you could borrow credentials that hit the weekly
+  limit immediately. `availableToLend` likewise now requires headroom on both.
+
 ## [0.5.0] — 2026-07-09
 
 ### Changed
