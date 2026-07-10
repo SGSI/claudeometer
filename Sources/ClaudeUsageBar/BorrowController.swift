@@ -109,12 +109,21 @@ final class BorrowController {
         }
     }
 
-    /// Approves an incoming borrow request: reads the lender's own live Claude
-    /// Code credential blob, seals it to the requester's encryption public
-    /// key, and relays the approval. User-initiated, so failures are surfaced.
+    /// Approves an incoming borrow request: reads the lender's OWN credential
+    /// blob, seals it to the requester's encryption public key, and relays the
+    /// approval. User-initiated, so failures are surfaced.
+    ///
+    /// The blob must come from the self vault item, not the live Claude Code
+    /// item: while *we* are borrowing, the live item holds a third party's
+    /// credential, and lending that on would hand their Claude login to the
+    /// requester without their consent. `ownUsageService` resolves to the self
+    /// item exactly when a borrow is active.
     func approve(_ req: IncomingRequest) async -> String? {
         do {
-            guard let blob = try credentialStore.read(service: ClaudeometerConstants.claudeCodeKeychainService) else {
+            let ownService = multiAccount.ownUsageService(
+                claudeCodeService: ClaudeometerConstants.claudeCodeKeychainService
+            )
+            guard let blob = try credentialStore.read(service: ownService) else {
                 return "No active Claude login to lend."
             }
             let sealed = try BorrowCrypto.seal(blob.raw, toRecipientPublicKeyBase64: req.requesterEncryptionPubKey)

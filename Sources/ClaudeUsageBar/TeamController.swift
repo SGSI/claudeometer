@@ -208,12 +208,6 @@ final class TeamController {
         }
     }
 
-    /// Heuristic for `postUsage`'s `availableToLend`: comfortably under half of
-    /// the 5-hour window used means there's headroom to lend to a teammate.
-    static func availableToLend(fiveHourPct: Double) -> Bool {
-        fiveHourPct < 50
-    }
-
     private static func friendlyMessage(for error: Error) -> String {
         switch error {
         case RelayError.http(let status, let body):
