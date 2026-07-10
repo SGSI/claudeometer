@@ -61,12 +61,25 @@
     content: "";
     position: fixed;
     inset: 0;
-    z-index: -3;
+    z-index: -4;
     background:
       radial-gradient(110% 70% at 82% -12%, rgba(229, 122, 76, 0.14), transparent 55%),
       radial-gradient(70% 50% at 8% 108%, rgba(93, 154, 79, 0.07), transparent 60%),
       var(--bg);
   }
+  /* WebGL heat-shimmer field (renders at half res, upscaled — soft by design).
+     If WebGL is unavailable it stays transparent and the layers below show. */
+  #glbg {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -3;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 1.6s ease;
+  }
+  #glbg.on { opacity: 1; }
   #embers {
     position: fixed;
     inset: 0;
@@ -563,6 +576,7 @@
 </style>
 </head>
 <body>
+<canvas id="glbg" aria-hidden="true"></canvas>
 <canvas id="embers" aria-hidden="true"></canvas>
 
 <nav>
@@ -1116,6 +1130,109 @@ brew reinstall --cask claudeometer</span>
   });
 
   reset();
+  requestAnimationFrame(frame);
+})();
+
+/* WebGL heat-shimmer — a full-screen fbm-noise shader flowing warm amber
+   currents. Raw WebGL1, no libraries. Renders at half resolution (it's a
+   soft atmospheric field; the upscale is invisible) so the GPU cost is tiny.
+   Bails silently when WebGL is unavailable — the CSS gradient + 2D embers
+   underneath ARE the fallback. Skipped under prefers-reduced-motion. */
+(function () {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  var canvas = document.getElementById("glbg");
+  if (!canvas) return;
+  var gl = canvas.getContext("webgl", { alpha: true, antialias: false, powerPreference: "low-power" })
+        || canvas.getContext("experimental-webgl");
+  if (!gl) return;
+
+  var VS = "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}";
+  var FS = [
+    "precision mediump float;",
+    "uniform float t;",
+    "uniform vec2 r;",
+    "float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}",
+    "float noise(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.-2.*f);",
+    " return mix(mix(hash(i),hash(i+vec2(1.,0.)),u.x),mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),u.x),u.y);}",
+    "float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*noise(p);p*=2.03;a*=.5;}return v;}",
+    "void main(){",
+    " vec2 uv=gl_FragCoord.xy/r;",
+    " vec2 p=uv*vec2(r.x/r.y,1.)*2.4;",
+    " float tt=t*.045;",
+    " vec2 q=vec2(fbm(p+vec2(0.,-tt*1.6)),fbm(p+vec2(2.7,-tt*1.2)));",
+    " float f=fbm(p+q*1.9+vec2(0.,-tt*2.));",
+    " float glow=smoothstep(.42,.98,f);",
+    " vec3 warm=vec3(.898,.478,.298);",   // brand amber #e57a4c
+    " vec3 gold=vec3(1.,.72,.45);",
+    " vec3 col=warm*glow*.16+gold*pow(glow,3.)*.12;",
+    " float vig=smoothstep(1.3,.3,distance(uv,vec2(.74,.72)));",
+    " float a=(glow*.55+pow(glow,3.)*.45)*vig*.85;",
+    " gl_FragColor=vec4(col*vig,a);",
+    "}"
+  ].join("\n");
+
+  function compile(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) return null;
+    return s;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VS);
+  var fs = compile(gl.FRAGMENT_SHADER, FS);
+  if (!vs || !fs) return;
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, "a");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  var uT = gl.getUniformLocation(prog, "t");
+  var uR = gl.getUniformLocation(prog, "r");
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  var SCALE = 0.5; // half-res render, CSS upscales
+  var dead = false;
+  function size() {
+    canvas.width = Math.max(2, Math.round(window.innerWidth * SCALE));
+    canvas.height = Math.max(2, Math.round(window.innerHeight * SCALE));
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  canvas.addEventListener("webglcontextlost", function (e) {
+    e.preventDefault();
+    dead = true;
+    canvas.classList.remove("on"); // fade back to CSS/ember fallback
+  });
+
+  var start = performance.now();
+  function frame() {
+    if (dead) return;
+    if (!document.hidden) {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.uniform1f(uT, (performance.now() - start) / 1000);
+      gl.uniform2f(uR, canvas.width, canvas.height);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  var rT;
+  window.addEventListener("resize", function () {
+    clearTimeout(rT);
+    rT = setTimeout(size, 150);
+  });
+
+  size();
+  canvas.classList.add("on");
   requestAnimationFrame(frame);
 })();
 </script>
