@@ -3,7 +3,7 @@
 All notable changes to Claudeometer are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.6.0] — 2026-07-10
 
 ### Added
 - **Weekly reset time.** The "This week" section now shows when the weekly

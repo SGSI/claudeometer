@@ -1,6 +1,6 @@
 cask "claudeometer" do
-  version "0.5.0"
-  sha256 "eabcf9c706b427e9f4c2721678dc9efeb99de613f4719e457caab553ee27150b"
+  version "0.6.0"
+  sha256 "83aa29fbd1ad5f45611a4756e2c7cae3cec456994263f491c873cdf0c871b021"
 
   url "https://github.com/SGSI/claudeometer/releases/download/v#{version}/Claudeometer.dmg",
       verified: "github.com/SGSI/claudeometer/"
